@@ -85,9 +85,31 @@ int Application::Run()
 
     while (m_running)
     {
-        ProcessEvents();
+        // Block until either an event arrives or the next cursor-blink toggle
+        // is due. Replaces the old SDL_PollEvent busy-loop that pinned a core.
+        Uint64    nextBlink = m_lastBlinkTime + BLINK_INTERVAL_MS;
+        Uint64    now       = SDL_GetTicks();
+        Sint32    timeoutMs = (nextBlink > now)
+                              ? static_cast<Sint32>(nextBlink - now)
+                              : 0;
+
+        SDL_Event event;
+        if (SDL_WaitEventTimeout(&event, timeoutMs))
+        {
+            DispatchEvent(event);
+            // Drain any other queued events without blocking, so a burst
+            // (e.g. key + text-input pair) is handled in one render pass.
+            while (SDL_PollEvent(&event))
+                DispatchEvent(event);
+        }
+
         Update();
-        Render();
+
+        if (m_needsRedraw)
+        {
+            Render();
+            m_needsRedraw = false;
+        }
     }
 
     return 0;
@@ -117,27 +139,31 @@ void Application::OpenFile(const std::string& path)
 // Event processing
 // ---------------------------------------------------------------------------
 
-void Application::ProcessEvents()
+void Application::DispatchEvent(const SDL_Event& event)
 {
-    SDL_Event event;
-    while (SDL_PollEvent(&event))
+    // Each branch sets m_needsRedraw — every event we currently handle
+    // can change visible state (cursor, dialog, buffer, layout). Unhandled
+    // event types (mouse motion, focus, etc.) fall through with no redraw,
+    // so passive mouse movement over the window costs nothing.
+    switch (event.type)
     {
-        switch (event.type)
-        {
-            case SDL_EVENT_QUIT:
-                RequestExit();
-                break;
-            case SDL_EVENT_KEY_DOWN:
-                HandleKeyDown(event.key);
-                break;
-            case SDL_EVENT_TEXT_INPUT:
-                HandleTextInput(event.text.text);
-                break;
-            case SDL_EVENT_WINDOW_RESIZED:
-            case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-                HandleWindowResized(event.window.data1, event.window.data2);
-                break;
-        }
+        case SDL_EVENT_QUIT:
+            RequestExit();
+            m_needsRedraw = true;
+            break;
+        case SDL_EVENT_KEY_DOWN:
+            HandleKeyDown(event.key);
+            m_needsRedraw = true;
+            break;
+        case SDL_EVENT_TEXT_INPUT:
+            HandleTextInput(event.text.text);
+            m_needsRedraw = true;
+            break;
+        case SDL_EVENT_WINDOW_RESIZED:
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+            HandleWindowResized(event.window.data1, event.window.data2);
+            m_needsRedraw = true;
+            break;
     }
 }
 
@@ -1608,5 +1634,6 @@ void Application::UpdateCursorBlink()
     {
         m_cursor.visible = !m_cursor.visible;
         m_lastBlinkTime  = now;
+        m_needsRedraw    = true;  // cursor visibility changed — repaint
     }
 }
