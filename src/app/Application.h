@@ -9,6 +9,7 @@
 #include "ui/MenuDefs.h"
 #include "ui/RetroUi.h"
 #include "editor/FileDocument.h"
+#include "editor/FileSettings.h"
 #include "editor/Selection.h"
 #include "editor/UndoHistory.h"
 #include "editor/WordWrap.h"
@@ -113,6 +114,14 @@ private:
     void OpenWordWrapDialog();
     void SetWordWrap(bool on);
     int  DisplayRowsForLine(int bufRow) const;
+
+    // Per-file settings sidecar (FileSettings). Add new persisted settings
+    // by extending the two Capture/Apply helpers — the I/O paths above and
+    // below already call them for every save/open.
+    void CaptureFileSettings(FileSettings& s) const;
+    void ApplyFileSettings(const FileSettings& s);
+    void WriteSidecarForCurrentDocument();
+    void LoadSidecarForCurrentDocument();
 
     // -----------------------------------------------------------------------
     bool       m_running             = false;
