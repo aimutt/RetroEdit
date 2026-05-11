@@ -9,6 +9,7 @@
 - [Why SDL Instead of a Traditional GUI Framework](#why-sdl-instead-of-a-traditional-gui-framework)
 - [Application Architecture](#application-architecture)
 - [Virtual Screen Model](#virtual-screen-model)
+- [Render Loop and Idle Cost](#render-loop-and-idle-cost)
 - [Suggested Project Structure](#suggested-project-structure)
 - [Core Design Patterns](#core-design-patterns)
 - [Extensibility Strategy](#extensibility-strategy)
@@ -179,6 +180,45 @@ The renderer draws the screen buffer to the window.
 The rest of the application writes characters and attributes into the screen buffer.
 
 This approach makes the application feel more like a real text-mode system.
+
+---
+
+## Render Loop and Idle Cost
+
+A retro text editor should sit quietly when nothing is happening. The naïve "poll events, update, render, repeat" loop common in SDL examples will pin a GPU at 50% and a CPU core at 9% at idle, because nothing throttles `SDL_RenderPresent` and nothing sleeps the thread.
+
+RetroEdit's main loop is built around three layered controls so that idle cost stays at roughly 1% CPU / 1% GPU even with a full screen of text loaded.
+
+### 1. VSync
+
+`Window` calls `SDL_SetRenderVSync(renderer, 1)` immediately after `SDL_CreateWindowAndRenderer`. `SDL_RenderPresent` now blocks until the next display vblank, capping the maximum frame rate at the monitor's refresh rate. This alone takes the loop from thousands of frames per second to ~60.
+
+### 2. Event-driven sleep with `SDL_WaitEventTimeout`
+
+The main loop in `Application::Run` does not busy-poll. Each iteration it computes the time remaining until the next cursor-blink tick (the only periodic redraw the editor needs) and calls `SDL_WaitEventTimeout` with that deadline. The thread is genuinely descheduled by the OS — it consumes no cycles — until either an input event arrives or the timeout expires. When an event does arrive, a follow-up `SDL_PollEvent` drain consumes any queued companions (for example a `KEY_DOWN` and its `TEXT_INPUT` pair) so they coalesce into a single render.
+
+### 3. `m_needsRedraw` dirty flag
+
+VSync caps *how often* the editor can repaint. The dirty flag controls *whether* it repaints at all. Every event the application handles (key, text input, window resize, quit) sets `m_needsRedraw = true`. The cursor-blink toggle in `UpdateCursorBlink` sets it. Unhandled events such as `MOUSEMOTION` deliberately do not set it — passive mouse movement over the window costs only the wake-up from `SDL_WaitEventTimeout`, no render. `Render()` runs only when the flag is set, then clears it.
+
+### Resulting behavior
+
+| State | Frames per second | Notes |
+|---|---|---|
+| Idle, no input | ~2 | One per cursor-blink toggle (500 ms interval) |
+| Active typing | up to display refresh | Each keystroke wakes the loop and renders within one vblank |
+| Window resize | up to display refresh | Existing reflow path repaints on every resize event |
+| Mouse motion only | 0 | Unhandled event — wakes the thread but no render |
+
+### What this does *not* do
+
+These were considered and intentionally deferred — current idle cost is low enough that the added complexity is not justified:
+
+- **Dirty-rect rendering.** Repainting only changed cells would shave full-screen render time, but the cell loop is already fast enough at 60 fps active and 2 fps idle.
+- **Per-cell color-state coalescing.** `RetroRenderer::Render` issues one `SDL_SetRenderDrawColor` per cell. With ~80×40 cells and the loop running only on demand, this is well within budget.
+- **Glyph cache eviction.** The cache grows monotonically with unique characters seen. On normal editing sessions it stays small. Revisit only if pasting very large multilingual documents becomes a use case.
+
+The guiding rule: **a GUI at rest should do nothing.** Three knobs cooperate to make that true — vsync caps the ceiling, event-wait lets the OS sleep the thread, and the dirty flag skips work that would have no visible effect.
 
 ---
 

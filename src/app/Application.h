@@ -45,7 +45,7 @@ public:
 
 private:
     // Main loop
-    void ProcessEvents();
+    void DispatchEvent(const SDL_Event& event);
     void Update();
     void Render();
 
@@ -126,6 +126,7 @@ private:
     // -----------------------------------------------------------------------
     bool       m_running             = false;
     bool       m_sdlInitialized      = false;
+    bool       m_needsRedraw         = true;  // paint first frame; set by event/blink handlers
     Uint64     m_lastBlinkTime       = 0;
     int        m_viewportTop         = 0;
     int        m_viewportLeft        = 0;

@@ -9,7 +9,14 @@ Window::Window(const std::string& title, int width, int height)
         SDL_Log("SDL_CreateWindowAndRenderer failed: %s", SDL_GetError());
         m_window   = nullptr;
         m_renderer = nullptr;
+        return;
     }
+
+    // Pace SDL_RenderPresent to the display's vblank. Without this the main
+    // loop spins as fast as the GPU will accept frames (~thousands/sec) and
+    // burns 50%+ GPU at idle. 1 = sync to refresh; SDL3 supports negative
+    // values for adaptive sync but vblank is plenty for a text editor.
+    SDL_SetRenderVSync(m_renderer, 1);
 }
 
 Window::~Window()

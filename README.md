@@ -10,6 +10,10 @@ RetroEdit draws its own text-mode interface inside an SDL window: a character-ce
 
 Early but usable. The editor opens, edits, and saves plain-text files; supports selection, cut/copy/paste, undo/redo, and find; navigates menus by keyboard; and lets you pick from several bundled monospace fonts at runtime. Themes are still compiled in (green phosphor), and there is no command palette / scripting yet — see the roadmap below.
 
+Per-file settings (currently word-wrap) are persisted in a sidecar `<file>.retroedit` next to the document and re-applied on open. The format is plain `key=value` text and is extensible — new settings are added with one line each in the capture/apply helpers.
+
+The main loop is event-driven with vsync and a redraw-on-demand dirty flag, so the editor idles at roughly 1% CPU and 1% GPU on a Windows x64 desktop even with a screen full of text — see [Render Loop and Idle Cost](Docs/RetroEdit.md#render-loop-and-idle-cost) in the design doc.
+
 Primary target is **Windows x64**. The architecture is portable; Linux and macOS builds are planned but not yet validated.
 
 ## Features
@@ -106,6 +110,7 @@ The full staged plan is in [Docs/RetroEdit.md](Docs/RetroEdit.md). At a glance:
 - **Draw everything ourselves.** No native menus, no native dialogs — the retro feel comes from owning every pixel inside the window.
 - **Model/View separation.** The text buffer doesn't know how it's drawn; the renderer doesn't know what the text means.
 - **Theme-driven color.** Every color goes through the active theme. No hardcoded RGB outside theme definitions.
+- **Idle cheaply.** The main loop blocks in `SDL_WaitEventTimeout` until either an event arrives or the next cursor-blink tick. Vsync caps the maximum frame rate; a dirty flag skips rendering when nothing visible has changed. A GUI at rest should do nothing.
 
 ## License
 
