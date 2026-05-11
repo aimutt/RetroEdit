@@ -1,0 +1,12 @@
+All the following commands are meant to be entered in the terminal
+
+claude  starts the claude code 
+
+/model  shows menu to change the claude model
+
+Type a ? to see the different claude code options
+
+SHIFT + TAB     SWITCH BETWEEN MODES (ASK, PLAN, CODE)
+SHIFT + ENTER   ADDS A NEWLINE
+
+
