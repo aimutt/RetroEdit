@@ -33,6 +33,7 @@ add_executable(RetroEdit
     src/ui/RetroUi.cpp
     src/editor/TextBuffer.cpp
     src/editor/FileDocument.cpp
+    src/editor/FileSettings.cpp
     src/editor/UndoHistory.cpp
 )
 

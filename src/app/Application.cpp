@@ -103,6 +103,7 @@ void Application::OpenFile(const std::string& path)
         m_viewportLeft  = 0;
         m_selection.Clear();
         m_undoHistory.ClearAll();
+        LoadSidecarForCurrentDocument();
         m_statusMessage = "Ready";
         UpdateWindowTitle();
     }
@@ -511,6 +512,7 @@ void Application::HandlePromptKeyDown(const SDL_KeyboardEvent& key)
                 }
                 else if (m_document->Save())
                 {
+                    WriteSidecarForCurrentDocument();
                     UpdateWindowTitle();
                     m_running = false;
                 }
@@ -1064,6 +1066,7 @@ void Application::CommitPrompt()
         {
             if (m_document->SaveAs(m_promptText))
             {
+                WriteSidecarForCurrentDocument();
                 m_statusMessage = "Saved.";
                 UpdateWindowTitle();
                 if (m_exitAfterSave)
@@ -1118,6 +1121,7 @@ bool Application::SaveDocument()
     }
     if (m_document->Save())
     {
+        WriteSidecarForCurrentDocument();
         m_statusMessage = "Saved.";
         UpdateWindowTitle();
         return true;
@@ -1354,6 +1358,44 @@ void Application::SetWordWrap(bool on)
         m_viewportLeft = 0;
     ScrollViewport();
     m_statusMessage = m_wordWrap ? "Word wrap on" : "Word wrap off";
+}
+
+// ---------------------------------------------------------------------------
+// Per-file settings sidecar
+//
+// To add a new persisted setting:
+//   - write it in CaptureFileSettings (one line)
+//   - read it in ApplyFileSettings  (one Has-guarded line)
+// The Load/Save plumbing below is generic and needs no further changes.
+// ---------------------------------------------------------------------------
+
+void Application::CaptureFileSettings(FileSettings& s) const
+{
+    s.SetBool("word_wrap", m_wordWrap);
+}
+
+void Application::ApplyFileSettings(const FileSettings& s)
+{
+    if (s.Has("word_wrap"))
+        SetWordWrap(s.GetBool("word_wrap"));
+}
+
+void Application::WriteSidecarForCurrentDocument()
+{
+    std::string sidecar = FileSettings::SidecarPath(m_document->Filename());
+    if (sidecar.empty()) return;
+    FileSettings s;
+    CaptureFileSettings(s);
+    s.Save(sidecar);  // silent on failure - sidecar is best-effort
+}
+
+void Application::LoadSidecarForCurrentDocument()
+{
+    std::string sidecar = FileSettings::SidecarPath(m_document->Filename());
+    if (sidecar.empty()) return;
+    FileSettings s;
+    if (s.Load(sidecar))
+        ApplyFileSettings(s);
 }
 
 void Application::HandleWindowResized(int newW, int newH)
