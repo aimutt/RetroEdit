@@ -615,7 +615,40 @@ void Application::HandlePromptKeyDown(const SDL_KeyboardEvent& key)
         return;
     }
 
-    // Text-input prompts (Open, SaveAs, Find)
+    // Find dialog has an extra checkbox control reachable via Tab.
+    if (m_promptMode == PromptMode::Find)
+    {
+        switch (key.scancode)
+        {
+            case SDL_SCANCODE_TAB:
+            case SDL_SCANCODE_UP:
+            case SDL_SCANCODE_DOWN:
+                m_findDialogFocus = 1 - m_findDialogFocus;
+                return;
+            case SDL_SCANCODE_SPACE:
+                if (m_findDialogFocus == 1)
+                {
+                    m_findCaseInsensitive = !m_findCaseInsensitive;
+                    m_swallowNextTextInput = true; // don't let the space land in the query
+                    return;
+                }
+                break; // input field: fall through to text-input path
+            case SDL_SCANCODE_RETURN:
+                CommitPrompt();
+                return;
+            case SDL_SCANCODE_ESCAPE:
+                CancelPrompt();
+                return;
+            case SDL_SCANCODE_BACKSPACE:
+                if (m_findDialogFocus == 0 && !m_promptText.empty())
+                    m_promptText.pop_back();
+                return;
+            default:
+                return;
+        }
+    }
+
+    // Text-input prompts (Open, SaveAs)
     switch (key.scancode)
     {
         case SDL_SCANCODE_RETURN:
@@ -701,8 +734,11 @@ void Application::HandleTextInput(const char* text)
     if (m_promptMode != PromptMode::None)
     {
         if (m_promptMode == PromptMode::Open  ||
-            m_promptMode == PromptMode::SaveAs ||
-            m_promptMode == PromptMode::Find)
+            m_promptMode == PromptMode::SaveAs)
+        {
+            m_promptText += text;
+        }
+        else if (m_promptMode == PromptMode::Find && m_findDialogFocus == 0)
         {
             m_promptText += text;
         }
@@ -1001,8 +1037,9 @@ void Application::PasteClipboard()
 
 void Application::StartFindPrompt()
 {
-    m_promptMode = PromptMode::Find;
-    m_promptText = m_findQuery;
+    m_promptMode      = PromptMode::Find;
+    m_promptText      = m_findQuery;
+    m_findDialogFocus = 0;   // start on the input field; case toggle persists
     m_statusMessage.clear();
 }
 
@@ -1013,7 +1050,8 @@ void Application::DoFind(const std::string& query)
 
     int foundRow = 0, foundCol = 0;
     if (m_document->Buffer().FindNext(query, m_findFromRow, m_findFromCol,
-                                      foundRow, foundCol))
+                                      foundRow, foundCol,
+                                      m_findCaseInsensitive))
     {
         m_cursor.row    = foundRow;
         m_cursor.column = foundCol + static_cast<int>(query.size());
@@ -1591,6 +1629,11 @@ void Application::Render()
 
     // Editor options
     uiState.wordWrap = m_wordWrap;
+
+    // Find dialog state
+    uiState.findDialogActive          = (m_promptMode == PromptMode::Find);
+    uiState.findDialogCaseInsensitive = m_findCaseInsensitive;
+    uiState.findDialogFocus           = m_findDialogFocus;
 
     m_ui->Draw(*m_screenBuffer, m_cursor, uiState);
 

@@ -52,6 +52,11 @@ struct EditorUiState
 
     // Editor options
     bool wordWrap = false;
+
+    // Find dialog (input field + case-insensitive checkbox)
+    bool findDialogActive          = false;
+    bool findDialogCaseInsensitive = false;
+    int  findDialogFocus           = 0;   // 0 = input field, 1 = checkbox
 };
 
 class RetroUi
@@ -85,5 +90,6 @@ private:
                            const std::string& line1, const std::string& line2,
                            const std::string& hint);
     void DrawFontDialog(ScreenBuffer& buffer, const EditorUiState& state);
+    void DrawFindDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawBox(ScreenBuffer& buffer, int x, int y, int w, int h, Color fg, Color bg);
 };

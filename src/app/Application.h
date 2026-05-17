@@ -136,6 +136,8 @@ private:
     std::string m_findQuery;
     int        m_findFromRow         = 0;
     int        m_findFromCol         = 0;
+    bool       m_findCaseInsensitive = false; // persisted for the session
+    int        m_findDialogFocus     = 0;     // 0 = input field, 1 = checkbox
     bool       m_lastActionWasInsert = false;
     bool       m_exitAfterSave       = false; // chain SaveAs dialog into program exit
     bool       m_swallowNextTextInput = false;// drop the TEXT_INPUT that follows a confirm Y/N

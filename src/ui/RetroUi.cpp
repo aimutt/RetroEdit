@@ -41,6 +41,8 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
             DrawConfirmDialog(buffer, state.dialogTitle,
                               state.dialogPrompt, state.dialogPrompt2,
                               state.dialogHint);
+        else if (state.findDialogActive)
+            DrawFindDialog(buffer, state);
         else
             DrawInputDialog(buffer, state.dialogTitle,
                             state.dialogPrompt, state.dialogInput,
@@ -597,6 +599,88 @@ void RetroUi::DrawConfirmDialog(ScreenBuffer& buffer, const std::string& title,
 
     std::string hintStr = hint.empty() ? "[Y] Yes      [N] No" : hint;
     buffer.WriteText(x + 2, y + outerHeight - 2, hintStr, dim, bg);
+}
+
+// ---------------------------------------------------------------------------
+// Find dialog (input field + case-insensitive checkbox)
+// ---------------------------------------------------------------------------
+
+void RetroUi::DrawFindDialog(ScreenBuffer& buffer, const EditorUiState& state)
+{
+    // Width is sized to fit the bottom hint exactly: usable inner text width
+    // is outerWidth - 4 (two borders + two padding cells), so a 56-char hint
+    // needs outerWidth >= 60.
+    static const int outerWidth  = 60;
+    static const int outerHeight = 9;   // taller than a plain input dialog to fit the checkbox row
+
+    int x = (buffer.Columns() - outerWidth) / 2;
+    int y = (m_layout.SCREEN_ROWS - outerHeight) / 2;
+    x = std::max(0, x);
+    y = std::max(0, y);
+
+    Color fg     = m_theme.normalText;
+    Color bg     = m_theme.background;
+    Color bright = m_theme.brightText;
+    Color dim    = m_theme.dimText;
+
+    DrawBox(buffer, x, y, outerWidth, outerHeight, fg, bg);
+
+    // Title centred in top border
+    std::string t = " Find ";
+    int titleX = x + (outerWidth - static_cast<int>(t.size())) / 2;
+    buffer.WriteText(titleX, y, t, bright, bg);
+
+    // Prompt label
+    buffer.WriteText(x + 2, y + 2, "Search for:", fg, bg);
+
+    // Bracketed input field
+    const bool inputFocused = (state.findDialogFocus == 0);
+    int inputX = x + 2;
+    int inputY = y + 3;
+    int inputW = outerWidth - 4;
+    int textW  = inputW - 2;
+
+    buffer.PutChar(inputX, inputY, U'[', dim, bg);
+    buffer.PutChar(inputX + inputW - 1, inputY, U']', dim, bg);
+
+    int visibleMax = textW - 1;
+    if (visibleMax < 0) visibleMax = 0;
+    std::string display = state.dialogInput;
+    if (static_cast<int>(display.size()) > visibleMax)
+        display = display.substr(display.size() - visibleMax);
+
+    for (int i = 0; i < static_cast<int>(display.size()); ++i)
+        buffer.PutChar(inputX + 1 + i,
+                       inputY,
+                       static_cast<char32_t>(static_cast<unsigned char>(display[i])),
+                       bright, bg);
+
+    // Block cursor (only when the input field has focus)
+    int cursorCol = inputX + 1 + static_cast<int>(display.size());
+    if (inputFocused
+        && state.dialogCursorVisible
+        && cursorCol >= inputX + 1
+        && cursorCol <= inputX + inputW - 2)
+    {
+        buffer.At(cursorCol, inputY).reverseVideo = true;
+    }
+
+    // Checkbox row
+    int   cbY        = y + 5;
+    bool  cbFocused  = (state.findDialogFocus == 1);
+    Color cbFg       = cbFocused ? m_theme.reverseForeground : fg;
+    Color cbBg       = cbFocused ? m_theme.reverseBackground : bg;
+    const char* mark = state.findDialogCaseInsensitive ? "[X]" : "[ ]";
+    std::string cbLabel = std::string(" ") + mark + " Case insensitive ";
+    // Pad highlight to a fixed width so focus is visible
+    int cbWidth = static_cast<int>(cbLabel.size());
+    for (int c = 0; c < cbWidth; ++c)
+        buffer.PutChar(x + 2 + c, cbY, U' ', cbFg, cbBg);
+    buffer.WriteText(x + 2, cbY, cbLabel, cbFg, cbBg);
+
+    // Hint at the bottom inner row
+    const char* hint = "[Enter] Find  [Tab] Switch  [Space] Toggle  [Esc] Cancel";
+    buffer.WriteText(x + 2, y + outerHeight - 2, hint, dim, bg);
 }
 
 // ---------------------------------------------------------------------------
