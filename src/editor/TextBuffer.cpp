@@ -1,5 +1,34 @@
 #include "TextBuffer.h"
 #include <algorithm>
+#include <cctype>
+
+namespace
+{
+    // ASCII-only case-insensitive substring search. Matches std::string::find
+    // semantics: returns the offset of the first match at or after searchFrom,
+    // or std::string::npos when none exists.
+    size_t FindCaseInsensitive(const std::string& haystack,
+                               const std::string& needle,
+                               size_t searchFrom)
+    {
+        const size_t hlen = haystack.size();
+        const size_t nlen = needle.size();
+        if (nlen == 0 || nlen > hlen) return std::string::npos;
+        const size_t last = hlen - nlen;
+        for (size_t i = searchFrom; i <= last; ++i)
+        {
+            bool match = true;
+            for (size_t j = 0; j < nlen; ++j)
+            {
+                unsigned char a = static_cast<unsigned char>(haystack[i + j]);
+                unsigned char b = static_cast<unsigned char>(needle[j]);
+                if (std::tolower(a) != std::tolower(b)) { match = false; break; }
+            }
+            if (match) return i;
+        }
+        return std::string::npos;
+    }
+}
 
 TextBuffer::TextBuffer()
 {
@@ -178,7 +207,8 @@ void TextBuffer::InsertText(int col, int line, const std::string& text,
 
 bool TextBuffer::FindNext(const std::string& query,
                           int fromRow, int fromCol,
-                          int& foundRow, int& foundCol) const
+                          int& foundRow, int& foundCol,
+                          bool caseInsensitive) const
 {
     if (query.empty() || LineCount() == 0) return false;
 
@@ -199,7 +229,9 @@ bool TextBuffer::FindNext(const std::string& query,
             if (pass == 0 && r == fromRow)
                 searchFrom = static_cast<size_t>(std::max(0, fromCol + qlen));
 
-            size_t pos = ln.find(query, searchFrom);
+            size_t pos = caseInsensitive
+                         ? FindCaseInsensitive(ln, query, searchFrom)
+                         : ln.find(query, searchFrom);
             if (pos != std::string::npos)
             {
                 foundRow = r;

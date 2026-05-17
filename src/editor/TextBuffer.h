@@ -30,7 +30,8 @@ public:
 
     // Forward search with wrap-around; returns false if not found
     bool FindNext(const std::string& query, int fromRow, int fromCol,
-                  int& foundRow, int& foundCol) const;
+                  int& foundRow, int& foundCol,
+                  bool caseInsensitive = false) const;
 
 private:
     std::vector<std::string> m_lines;
