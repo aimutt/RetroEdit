@@ -5,6 +5,7 @@
 #include "render/Theme.h"
 #include "editor/TextBuffer.h"
 #include <string>
+#include <vector>
 
 struct Cursor;
 
@@ -62,6 +63,12 @@ struct EditorUiState
     int  wordCount             = 0;
     bool showWordCount         = false;
     bool wordCountDialogActive = false;
+
+    // Spell check
+    bool spellCheckEnabled   = false;
+    bool highlightMisspelled = false;
+    struct MisspelledSpan { int row; int col; int len; };
+    std::vector<MisspelledSpan> misspelledSpans;
 };
 
 class RetroUi

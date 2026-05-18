@@ -1,6 +1,9 @@
 #include "Application.h"
 #include "editor/WordCount.h"
+#include "platform/AppData.h"
+#include "platform/Beep.h"
 #include <algorithm>
+#include <cctype>
 
 // Window starts at this size. Both dimensions track live drag-resizes after
 // startup; the screen-buffer column/row count is derived from current window
@@ -59,6 +62,8 @@ Application::Application()
     m_document     = std::make_unique<FileDocument>();
 
     SDL_StartTextInput(m_window->GetWindow());
+
+    LoadGlobalSettings();
 
     m_lastBlinkTime = SDL_GetTicks();
     m_running = true;
@@ -757,8 +762,11 @@ void Application::HandleTextInput(const char* text)
 
     if (m_promptMode != PromptMode::None)
     {
-        if (m_promptMode == PromptMode::Open  ||
-            m_promptMode == PromptMode::SaveAs)
+        if (m_promptMode == PromptMode::Open            ||
+            m_promptMode == PromptMode::SaveAs          ||
+            m_promptMode == PromptMode::AddWordDialog   ||
+            m_promptMode == PromptMode::RemoveWordDialog||
+            m_promptMode == PromptMode::CheckWordDialog)
         {
             m_promptText += text;
         }
@@ -785,6 +793,15 @@ void Application::HandleTextInput(const char* text)
             ++m_cursor.column;
             m_document->MarkDirty();
             UpdateWindowTitle();
+
+            // Spell check: if the user just typed a word-boundary character,
+            // check the word that immediately precedes the boundary.
+            if (m_spellCheckEnabled)
+            {
+                bool isLetter = std::isalpha(uch) != 0 || uch == '\'';
+                if (!isLetter)
+                    CheckJustCompletedWord();
+            }
         }
     }
 
@@ -1180,6 +1197,45 @@ void Application::CommitPrompt()
         m_findFromCol = m_cursor.column;
         DoFind(m_promptText);
     }
+    else if (mode == PromptMode::AddWordDialog)
+    {
+        if (!m_promptText.empty())
+        {
+            if (m_dictionary.AddWord(m_promptText))
+            {
+                SaveUserDictionary();
+                m_statusMessage = "Added '" + m_promptText + "' to dictionary";
+            }
+            else
+            {
+                m_statusMessage = "'" + m_promptText + "' is already in the dictionary";
+            }
+        }
+    }
+    else if (mode == PromptMode::RemoveWordDialog)
+    {
+        if (!m_promptText.empty())
+        {
+            if (m_dictionary.RemoveWord(m_promptText))
+            {
+                SaveUserDictionary();
+                m_statusMessage = "Removed '" + m_promptText + "' from dictionary";
+            }
+            else
+            {
+                m_statusMessage = "'" + m_promptText + "' is not in the dictionary";
+            }
+        }
+    }
+    else if (mode == PromptMode::CheckWordDialog)
+    {
+        if (!m_promptText.empty())
+        {
+            m_statusMessage = m_dictionary.Contains(m_promptText)
+                ? "'" + m_promptText + "' is in the dictionary"
+                : "'" + m_promptText + "' is NOT in the dictionary";
+        }
+    }
 
     m_promptText.clear();
 }
@@ -1334,12 +1390,24 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             }
             break;
 
+        case 5: // Tools
+            switch (itemIdx)
+            {
+                case 0: OpenAddWordDialog();    break;
+                case 1: OpenRemoveWordDialog(); break;
+                case 3: OpenCheckWordDialog();  break;
+                default: break;
+            }
+            break;
+
         case 6: // Options
             switch (itemIdx)
             {
                 case 0: OpenFontDialog();  break;   // Font...
                 case 1: OpenWordWrapDialog(); break; // Word Wrap
                 case 2: OpenWordCountDialog(); break; // Word Count
+                case 3: ToggleSpellCheck(); break;
+                case 4: ToggleHighlightMisspelled(); break;
                 default: break;
             }
             break;
@@ -1458,6 +1526,116 @@ void Application::ToggleStatusBarWordCount()
 {
     m_showWordCount = !m_showWordCount;
     WriteSidecarForCurrentDocument();
+}
+
+// ---------------------------------------------------------------------------
+// Spell check
+// ---------------------------------------------------------------------------
+
+void Application::OpenAddWordDialog()
+{
+    m_promptMode = PromptMode::AddWordDialog;
+    m_promptText.clear();
+    m_statusMessage.clear();
+}
+
+void Application::OpenRemoveWordDialog()
+{
+    m_promptMode = PromptMode::RemoveWordDialog;
+    m_promptText.clear();
+    m_statusMessage.clear();
+}
+
+void Application::OpenCheckWordDialog()
+{
+    m_promptMode = PromptMode::CheckWordDialog;
+    m_promptText.clear();
+    m_statusMessage.clear();
+}
+
+void Application::ToggleSpellCheck()
+{
+    m_spellCheckEnabled = !m_spellCheckEnabled;
+    m_statusMessage = m_spellCheckEnabled ? "Spell check on" : "Spell check off";
+    SaveGlobalSettings();
+}
+
+void Application::ToggleHighlightMisspelled()
+{
+    m_highlightMisspelled = !m_highlightMisspelled;
+    m_statusMessage = m_highlightMisspelled
+        ? "Misspelled highlighting on"
+        : "Misspelled highlighting off";
+    SaveGlobalSettings();
+}
+
+void Application::CheckJustCompletedWord()
+{
+    // The cursor sits just after the boundary character; the word ended at
+    // cursor.column - 2 (one back for the boundary char itself).
+    const std::string& line = m_document->Buffer().Line(m_cursor.row);
+    int end = m_cursor.column - 2;
+    if (end < 0 || end >= static_cast<int>(line.size())) return;
+
+    auto isLetter = [](char c) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        return std::isalpha(uc) != 0 || c == '\'';
+    };
+
+    // No word just completed if the character before the boundary isn't
+    // itself a letter (e.g. typing space after space, or at line start).
+    if (!isLetter(line[end])) return;
+
+    int start = end;
+    while (start > 0 && isLetter(line[start - 1]))
+        --start;
+
+    int wordEnd = end + 1; // exclusive
+    // Strip leading/trailing apostrophes.
+    while (start < wordEnd && line[start]      == '\'') ++start;
+    while (wordEnd > start && line[wordEnd-1]  == '\'') --wordEnd;
+
+    if (wordEnd <= start) return;
+
+    std::string word = line.substr(static_cast<size_t>(start),
+                                   static_cast<size_t>(wordEnd - start));
+    if (!m_dictionary.Contains(word))
+        PlayBeep();
+}
+
+void Application::SaveUserDictionary()
+{
+    std::string dir = UserConfigDir();
+    if (dir.empty()) return;
+    m_dictionary.SaveUserOverlay(dir + "user_dictionary.txt");
+}
+
+void Application::LoadGlobalSettings()
+{
+    std::string dir = UserConfigDir();
+    if (dir.empty()) return;
+
+    FileSettings s;
+    if (s.Load(dir + "config.ini"))
+    {
+        if (s.Has("spell_check"))
+            m_spellCheckEnabled = s.GetBool("spell_check");
+        if (s.Has("highlight_misspelled"))
+            m_highlightMisspelled = s.GetBool("highlight_misspelled");
+    }
+
+    m_dictionary.LoadUserOverlay(dir + "user_dictionary.txt");
+}
+
+void Application::SaveGlobalSettings()
+{
+    std::string dir = UserConfigDir();
+    if (dir.empty()) return;
+
+    FileSettings s;
+    s.SetBool("spell_check",          m_spellCheckEnabled);
+    s.SetBool("highlight_misspelled", m_highlightMisspelled);
+    s.Save(dir + "config.ini");
 }
 
 // ---------------------------------------------------------------------------
@@ -1586,7 +1764,10 @@ void Application::Render()
                             m_promptMode == PromptMode::ConfirmExit      ||
                             m_promptMode == PromptMode::ConfirmExitClean ||
                             m_promptMode == PromptMode::ConfirmNew       ||
-                            m_promptMode == PromptMode::ConfirmWordWrap);
+                            m_promptMode == PromptMode::ConfirmWordWrap  ||
+                            m_promptMode == PromptMode::AddWordDialog    ||
+                            m_promptMode == PromptMode::RemoveWordDialog ||
+                            m_promptMode == PromptMode::CheckWordDialog);
     uiState.dialogIsConfirm = (m_promptMode == PromptMode::ConfirmExit      ||
                                m_promptMode == PromptMode::ConfirmExitClean ||
                                m_promptMode == PromptMode::ConfirmNew       ||
@@ -1635,6 +1816,21 @@ void Application::Render()
             uiState.dialogPrompt2 = "Turn it on or off?";
             uiState.dialogHint    = "[Y] On      [N] Off      [Esc] Cancel";
             break;
+        case PromptMode::AddWordDialog:
+            uiState.dialogTitle   = "Add to Dictionary";
+            uiState.dialogPrompt  = "Word to add:";
+            uiState.dialogPrompt2 = "";
+            break;
+        case PromptMode::RemoveWordDialog:
+            uiState.dialogTitle   = "Remove from Dictionary";
+            uiState.dialogPrompt  = "Word to remove:";
+            uiState.dialogPrompt2 = "";
+            break;
+        case PromptMode::CheckWordDialog:
+            uiState.dialogTitle   = "Check Word";
+            uiState.dialogPrompt  = "Word to check:";
+            uiState.dialogPrompt2 = "";
+            break;
         default:
             uiState.dialogTitle.clear();
             uiState.dialogPrompt.clear();
@@ -1680,6 +1876,48 @@ void Application::Render()
     uiState.wordCount             = (m_showWordCount || uiState.wordCountDialogActive)
                                     ? CountWords(m_document->Buffer())
                                     : 0;
+
+    // Spell check
+    uiState.spellCheckEnabled   = m_spellCheckEnabled;
+    uiState.highlightMisspelled = m_highlightMisspelled;
+    if (m_highlightMisspelled)
+    {
+        // Tokenize each visible buffer line and record misspelled spans.
+        const auto& buf = m_document->Buffer();
+        int firstRow = std::max(0, m_viewportTop);
+        int lastRow  = std::min(buf.LineCount() - 1,
+                                m_viewportTop + m_layout.EDITOR_ROWS - 1);
+        for (int r = firstRow; r <= lastRow; ++r)
+        {
+            const std::string& line = buf.Line(r);
+            int n = static_cast<int>(line.size());
+            int i = 0;
+            while (i < n)
+            {
+                unsigned char uc = static_cast<unsigned char>(line[i]);
+                bool isWordChar = std::isalpha(uc) != 0 || line[i] == '\'';
+                if (!isWordChar) { ++i; continue; }
+
+                int start = i;
+                while (i < n)
+                {
+                    unsigned char u = static_cast<unsigned char>(line[i]);
+                    if (std::isalpha(u) == 0 && line[i] != '\'') break;
+                    ++i;
+                }
+                int wstart = start;
+                int wend   = i;
+                while (wstart < wend && line[wstart]    == '\'') ++wstart;
+                while (wend   > wstart && line[wend-1]  == '\'') --wend;
+                if (wend <= wstart) continue;
+
+                std::string word = line.substr(static_cast<size_t>(wstart),
+                                               static_cast<size_t>(wend - wstart));
+                if (!m_dictionary.Contains(word))
+                    uiState.misspelledSpans.push_back({ r, wstart, wend - wstart });
+            }
+        }
+    }
 
     m_ui->Draw(*m_screenBuffer, m_cursor, uiState);
 

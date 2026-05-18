@@ -8,6 +8,7 @@
 #include "ui/Layout.h"
 #include "ui/MenuDefs.h"
 #include "ui/RetroUi.h"
+#include "editor/Dictionary.h"
 #include "editor/FileDocument.h"
 #include "editor/FileSettings.h"
 #include "editor/Selection.h"
@@ -33,6 +34,9 @@ enum class PromptMode
     FontDialog,     // Font picker
     ConfirmWordWrap,// Y = wrap on, N = wrap off, Esc = cancel
     WordCountDialog,// shows live word count + status-bar toggle checkbox
+    AddWordDialog,  // text input -> Dictionary::AddWord
+    RemoveWordDialog,// text input -> Dictionary::RemoveWord
+    CheckWordDialog,// text input -> Dictionary::Contains, result in status bar
 };
 
 class Application
@@ -120,6 +124,19 @@ private:
     void OpenWordCountDialog();
     void ToggleStatusBarWordCount();
 
+    // Spell check
+    void OpenAddWordDialog();
+    void OpenRemoveWordDialog();
+    void OpenCheckWordDialog();
+    void ToggleSpellCheck();
+    void ToggleHighlightMisspelled();
+    void CheckJustCompletedWord();
+    void SaveUserDictionary();
+
+    // Global app settings (persisted under %LOCALAPPDATA%\RetroEdit\)
+    void LoadGlobalSettings();
+    void SaveGlobalSettings();
+
     // Per-file settings sidecar (FileSettings). Add new persisted settings
     // by extending the two Capture/Apply helpers — the I/O paths above and
     // below already call them for every save/open.
@@ -168,6 +185,11 @@ private:
 
     // Word count status-bar display toggle (persisted per file)
     bool         m_showWordCount      = false;
+
+    // Spell check (global; persisted under %LOCALAPPDATA%\RetroEdit\)
+    bool         m_spellCheckEnabled    = false;
+    bool         m_highlightMisspelled  = false;
+    Dictionary   m_dictionary;
 
     Layout                          m_layout;
     Theme                           m_theme;

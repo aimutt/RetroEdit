@@ -36,14 +36,28 @@ add_executable(RetroEdit
     src/editor/FileSettings.cpp
     src/editor/UndoHistory.cpp
     src/editor/WordCount.cpp
+    src/editor/Dictionary.cpp
+    src/editor/Dictionary.gen.cpp
+    src/platform/AppData.cpp
+    src/platform/Beep.cpp
 )
 
 target_compile_options(RetroEdit PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /utf-8>
 )
 
+# The generated dictionary translation unit emits more than 65536 COFF
+# sections in /O2 Release; compile it with /bigobj.
+set_source_files_properties(src/editor/Dictionary.gen.cpp
+    PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/bigobj>"
+)
+
 target_include_directories(RetroEdit PRIVATE src)
-target_link_libraries(RetroEdit PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf)
+target_link_libraries(RetroEdit PRIVATE
+    SDL3::SDL3
+    SDL3_ttf::SDL3_ttf
+    $<$<PLATFORM_ID:Windows>:Winmm>   # PlaySound, used by src/platform/Beep.cpp
+)
 
 # Copy SDL3.dll and SDL3_ttf.dll next to the executable after each build
 add_custom_command(TARGET RetroEdit POST_BUILD

@@ -122,6 +122,14 @@ void RetroUi::DrawEditorArea(ScreenBuffer& buffer, const TextBuffer& textBuffer,
     sel.anchorRow = state.selAnchorRow;
     sel.anchorCol = state.selAnchorCol;
 
+    auto inMisspelled = [&state](int row, int col) {
+        if (!state.highlightMisspelled) return false;
+        for (const auto& s : state.misspelledSpans)
+            if (s.row == row && col >= s.col && col < s.col + s.len)
+                return true;
+        return false;
+    };
+
     if (!state.wordWrap)
     {
         // Single buffer row per screen row, with horizontal scroll.
@@ -148,6 +156,10 @@ void RetroUi::DrawEditorArea(ScreenBuffer& buffer, const TextBuffer& textBuffer,
 
                 Color fg = selected ? m_theme.reverseForeground : m_theme.normalText;
                 Color bg = selected ? m_theme.reverseBackground : m_theme.background;
+
+                if (!selected && bufCol >= 0 && bufCol < lineLen
+                    && inMisspelled(bufLine, bufCol))
+                    fg = m_theme.misspelledText;
 
                 buffer.PutChar(screenCol, screenRow, ch, fg, bg);
             }
@@ -192,6 +204,9 @@ void RetroUi::DrawEditorArea(ScreenBuffer& buffer, const TextBuffer& textBuffer,
 
                 Color fg = selected ? m_theme.reverseForeground : m_theme.normalText;
                 Color bg = selected ? m_theme.reverseBackground : m_theme.background;
+
+                if (inSegment && !selected && inMisspelled(bufLine, bufCol))
+                    fg = m_theme.misspelledText;
 
                 buffer.PutChar(screenCol, screenRow, ch, fg, bg);
             }
@@ -288,14 +303,28 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
     if (menuIdx < 0 || menuIdx >= static_cast<int>(menus.size())) return;
     const MenuDef& menu = menus[menuIdx];
 
+    // Effective shortcut text for an item — accounts for the Options menu's
+    // live On/Off toggles whose static `shortcut` field is empty. The width
+    // calc and the render path both consult this so the column doesn't get
+    // overrun when "Off" is wider than the (empty) static shortcut.
+    auto effectiveShortcut = [&](int idx, const MenuItemDef& item) -> std::string {
+        if (menuIdx == 6 && idx == 1) return state.wordWrap            ? "On" : "Off";
+        if (menuIdx == 6 && idx == 2) return state.showWordCount       ? "On" : "Off";
+        if (menuIdx == 6 && idx == 3) return state.spellCheckEnabled   ? "On" : "Off";
+        if (menuIdx == 6 && idx == 4) return state.highlightMisspelled ? "On" : "Off";
+        return item.shortcut;
+    };
+
     // Compute required inner width: label + gap + shortcut
     int innerWidth = 16; // minimum
-    for (const auto& item : menu.items)
+    for (int i = 0; i < static_cast<int>(menu.items.size()); ++i)
     {
+        const auto& item = menu.items[i];
         if (item.label.empty()) continue;
         int w = static_cast<int>(item.label.size());
-        if (!item.shortcut.empty())
-            w += static_cast<int>(item.shortcut.size()) + 2; // two-space gap
+        std::string sc = effectiveShortcut(i, item);
+        if (!sc.empty())
+            w += static_cast<int>(sc.size()) + 2; // two-space gap
         innerWidth = std::max(innerWidth, w);
     }
     innerWidth += 2; // one space padding each side
@@ -355,11 +384,7 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
 
             // Shortcut (right-aligned with one space from right border).
             // Options > Word Wrap shows live On/Off state.
-            std::string shortcut = item.shortcut;
-            if (menuIdx == 6 && i == 1)
-                shortcut = state.wordWrap ? "On" : "Off";
-            else if (menuIdx == 6 && i == 2)
-                shortcut = state.showWordCount ? "On" : "Off";
+            std::string shortcut = effectiveShortcut(i, item);
             if (!shortcut.empty())
             {
                 Color scFg = isHighlighted ? m_theme.reverseForeground : m_theme.dimText;
