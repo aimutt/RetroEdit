@@ -593,11 +593,13 @@ void Application::HandlePromptKeyDown(const SDL_KeyboardEvent& key)
                 m_promptMode = PromptMode::None;
                 m_swallowNextTextInput = true;
                 SetWordWrap(true);
+                WriteSidecarForCurrentDocument();
                 break;
             case SDL_SCANCODE_N:
                 m_promptMode = PromptMode::None;
                 m_swallowNextTextInput = true;
                 SetWordWrap(false);
+                WriteSidecarForCurrentDocument();
                 break;
             case SDL_SCANCODE_ESCAPE:
                 m_promptMode    = PromptMode::None;
@@ -1455,6 +1457,7 @@ void Application::OpenWordCountDialog()
 void Application::ToggleStatusBarWordCount()
 {
     m_showWordCount = !m_showWordCount;
+    WriteSidecarForCurrentDocument();
 }
 
 // ---------------------------------------------------------------------------
