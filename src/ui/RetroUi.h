@@ -57,6 +57,11 @@ struct EditorUiState
     bool findDialogActive          = false;
     bool findDialogCaseInsensitive = false;
     int  findDialogFocus           = 0;   // 0 = input field, 1 = checkbox
+
+    // Word count
+    int  wordCount             = 0;
+    bool showWordCount         = false;
+    bool wordCountDialogActive = false;
 };
 
 class RetroUi
@@ -91,5 +96,6 @@ private:
                            const std::string& hint);
     void DrawFontDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawFindDialog(ScreenBuffer& buffer, const EditorUiState& state);
+    void DrawWordCountDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawBox(ScreenBuffer& buffer, int x, int y, int w, int h, Color fg, Color bg);
 };

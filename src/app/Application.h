@@ -32,6 +32,7 @@ enum class PromptMode
     AboutScreen,    // About dialog
     FontDialog,     // Font picker
     ConfirmWordWrap,// Y = wrap on, N = wrap off, Esc = cancel
+    WordCountDialog,// shows live word count + status-bar toggle checkbox
 };
 
 class Application
@@ -115,6 +116,10 @@ private:
     void SetWordWrap(bool on);
     int  DisplayRowsForLine(int bufRow) const;
 
+    // Word count
+    void OpenWordCountDialog();
+    void ToggleStatusBarWordCount();
+
     // Per-file settings sidecar (FileSettings). Add new persisted settings
     // by extending the two Capture/Apply helpers — the I/O paths above and
     // below already call them for every save/open.
@@ -160,6 +165,9 @@ private:
 
     // Word wrap (display-only soft wrap)
     bool         m_wordWrap           = false;
+
+    // Word count status-bar display toggle (persisted per file)
+    bool         m_showWordCount      = false;
 
     Layout                          m_layout;
     Theme                           m_theme;
