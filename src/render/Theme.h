@@ -10,4 +10,8 @@ struct Theme
     Color reverseForeground {  0,  20,   0, 255};
     Color reverseBackground {100, 255, 130, 255};
     Color border            { 80, 220, 100, 255};
+
+    // Misspelled words: an amber-orange that contrasts against the green
+    // palette without clashing with selection's reverse-video look.
+    Color misspelledText    {255, 170,  60, 255};
 };

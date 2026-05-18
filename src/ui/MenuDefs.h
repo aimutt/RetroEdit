@@ -59,12 +59,17 @@ inline const std::vector<MenuDef>& GetMenuDefs()
             { "(coming soon)", "" },
         }},
         { "Tools", 32, {
-            { "(coming soon)", "" },
+            { "Add to Dictionary...",      "" },
+            { "Remove from Dictionary...", "" },
+            { "",                          "" },
+            { "Check Word...",             "" },
         }},
         { "Options", 39, {
-            { "Font...",      ""     },
-            { "Word Wrap",    ""     },   // shortcut column shows On/Off at draw time
-            { "Word Count",   ""     },   // shortcut column shows On/Off at draw time
+            { "Font...",              ""     },
+            { "Word Wrap",            ""     },   // shortcut column shows On/Off at draw time
+            { "Word Count",           ""     },   // shortcut column shows On/Off at draw time
+            { "Spell Check",          ""     },   // shortcut column shows On/Off at draw time
+            { "Highlight Misspelled", ""     },   // shortcut column shows On/Off at draw time
         }},
         { "Help", 48, {
             { "Help",         "F1"   },
