@@ -35,6 +35,9 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
     if (state.showFontDialog)
         DrawFontDialog(buffer, state);
 
+    if (state.wordCountDialogActive)
+        DrawWordCountDialog(buffer, state);
+
     if (state.dialogActive)
     {
         if (state.dialogIsConfirm)
@@ -211,8 +214,11 @@ void RetroUi::DrawStatusBar(ScreenBuffer& buffer, const Cursor& cursor,
     buffer.WriteText(1, m_layout.ROW_STATUS, state.statusMessage,
                      m_theme.normalText, m_theme.background);
 
-    std::string pos = "Ln " + std::to_string(cursor.row + 1)
-                    + ", Col " + std::to_string(cursor.column + 1);
+    std::string pos;
+    if (state.showWordCount)
+        pos = "Words: " + std::to_string(state.wordCount) + "  ";
+    pos += "Ln " + std::to_string(cursor.row + 1)
+         + ", Col " + std::to_string(cursor.column + 1);
     int posX = buffer.Columns() - static_cast<int>(pos.size()) - 1;
     if (posX > 0)
         buffer.WriteText(posX, m_layout.ROW_STATUS, pos,
@@ -352,6 +358,8 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
             std::string shortcut = item.shortcut;
             if (menuIdx == 6 && i == 1)
                 shortcut = state.wordWrap ? "On" : "Off";
+            else if (menuIdx == 6 && i == 2)
+                shortcut = state.showWordCount ? "On" : "Off";
             if (!shortcut.empty())
             {
                 Color scFg = isHighlighted ? m_theme.reverseForeground : m_theme.dimText;
@@ -680,6 +688,53 @@ void RetroUi::DrawFindDialog(ScreenBuffer& buffer, const EditorUiState& state)
 
     // Hint at the bottom inner row
     const char* hint = "[Enter] Find  [Tab] Switch  [Space] Toggle  [Esc] Cancel";
+    buffer.WriteText(x + 2, y + outerHeight - 2, hint, dim, bg);
+}
+
+// ---------------------------------------------------------------------------
+// Word count dialog (shows live count + status-bar toggle checkbox)
+// ---------------------------------------------------------------------------
+
+void RetroUi::DrawWordCountDialog(ScreenBuffer& buffer, const EditorUiState& state)
+{
+    // Inner usable text width = outerWidth - 4 (borders + padding).
+    static const int outerWidth  = 56;
+    static const int outerHeight = 9;
+
+    int x = (buffer.Columns() - outerWidth) / 2;
+    int y = (m_layout.SCREEN_ROWS - outerHeight) / 2;
+    x = std::max(0, x);
+    y = std::max(0, y);
+
+    Color fg     = m_theme.normalText;
+    Color bg     = m_theme.background;
+    Color bright = m_theme.brightText;
+    Color dim    = m_theme.dimText;
+
+    DrawBox(buffer, x, y, outerWidth, outerHeight, fg, bg);
+
+    // Title centred in top border
+    std::string t = " Word Count ";
+    int titleX = x + (outerWidth - static_cast<int>(t.size())) / 2;
+    buffer.WriteText(titleX, y, t, bright, bg);
+
+    // Count line
+    std::string countLine = "Word count: " + std::to_string(state.wordCount);
+    buffer.WriteText(x + 2, y + 2, countLine, bright, bg);
+
+    // Checkbox row (always rendered with focus highlight — only control here)
+    int   cbY        = y + 5;
+    Color cbFg       = m_theme.reverseForeground;
+    Color cbBg       = m_theme.reverseBackground;
+    const char* mark = state.showWordCount ? "[X]" : "[ ]";
+    std::string cbLabel = std::string(" ") + mark + " Show in status bar ";
+    int cbWidth = static_cast<int>(cbLabel.size());
+    for (int c = 0; c < cbWidth; ++c)
+        buffer.PutChar(x + 2 + c, cbY, U' ', cbFg, cbBg);
+    buffer.WriteText(x + 2, cbY, cbLabel, cbFg, cbBg);
+
+    // Hint
+    const char* hint = "[Space] Toggle  [Enter/Esc] Close";
     buffer.WriteText(x + 2, y + outerHeight - 2, hint, dim, bg);
 }
 

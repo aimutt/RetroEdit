@@ -35,6 +35,7 @@ add_executable(RetroEdit
     src/editor/FileDocument.cpp
     src/editor/FileSettings.cpp
     src/editor/UndoHistory.cpp
+    src/editor/WordCount.cpp
 )
 
 target_compile_options(RetroEdit PRIVATE

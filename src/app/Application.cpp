@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "editor/WordCount.h"
 #include <algorithm>
 
 // Window starts at this size. Both dimensions track live drag-resizes after
@@ -180,6 +181,27 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
     if (m_promptMode == PromptMode::HelpScreen || m_promptMode == PromptMode::AboutScreen)
     {
         m_promptMode = PromptMode::None;
+        return;
+    }
+
+    // Word Count modal — Space/Tab toggle the status-bar display,
+    // Enter/Esc close.
+    if (m_promptMode == PromptMode::WordCountDialog)
+    {
+        switch (key.scancode)
+        {
+            case SDL_SCANCODE_SPACE:
+            case SDL_SCANCODE_TAB:
+                ToggleStatusBarWordCount();
+                m_swallowNextTextInput = true; // drop the space char
+                break;
+            case SDL_SCANCODE_RETURN:
+            case SDL_SCANCODE_ESCAPE:
+                m_promptMode = PromptMode::None;
+                break;
+            default:
+                break;
+        }
         return;
     }
 
@@ -1315,6 +1337,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             {
                 case 0: OpenFontDialog();  break;   // Font...
                 case 1: OpenWordWrapDialog(); break; // Word Wrap
+                case 2: OpenWordCountDialog(); break; // Word Count
                 default: break;
             }
             break;
@@ -1424,6 +1447,16 @@ void Application::SetWordWrap(bool on)
     m_statusMessage = m_wordWrap ? "Word wrap on" : "Word wrap off";
 }
 
+void Application::OpenWordCountDialog()
+{
+    m_promptMode = PromptMode::WordCountDialog;
+}
+
+void Application::ToggleStatusBarWordCount()
+{
+    m_showWordCount = !m_showWordCount;
+}
+
 // ---------------------------------------------------------------------------
 // Per-file settings sidecar
 //
@@ -1435,13 +1468,16 @@ void Application::SetWordWrap(bool on)
 
 void Application::CaptureFileSettings(FileSettings& s) const
 {
-    s.SetBool("word_wrap", m_wordWrap);
+    s.SetBool("word_wrap",       m_wordWrap);
+    s.SetBool("show_word_count", m_showWordCount);
 }
 
 void Application::ApplyFileSettings(const FileSettings& s)
 {
     if (s.Has("word_wrap"))
         SetWordWrap(s.GetBool("word_wrap"));
+    if (s.Has("show_word_count"))
+        m_showWordCount = s.GetBool("show_word_count");
 }
 
 void Application::WriteSidecarForCurrentDocument()
@@ -1634,6 +1670,13 @@ void Application::Render()
     uiState.findDialogActive          = (m_promptMode == PromptMode::Find);
     uiState.findDialogCaseInsensitive = m_findCaseInsensitive;
     uiState.findDialogFocus           = m_findDialogFocus;
+
+    // Word count: only compute when the status bar or modal needs it.
+    uiState.showWordCount         = m_showWordCount;
+    uiState.wordCountDialogActive = (m_promptMode == PromptMode::WordCountDialog);
+    uiState.wordCount             = (m_showWordCount || uiState.wordCountDialogActive)
+                                    ? CountWords(m_document->Buffer())
+                                    : 0;
 
     m_ui->Draw(*m_screenBuffer, m_cursor, uiState);
 
