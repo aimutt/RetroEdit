@@ -78,6 +78,53 @@ public:
 
     void Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiState& state);
 
+    // Mouse hit-testing. Coordinates are in screen-cell space (not pixels).
+    // Returns the menu index at cellCol on the menu bar row, or -1.
+    int HitTestMenuBar(int cellCol) const;
+
+    // Returns the dropdown item index at (cellCol, cellRow) for menuIdx, or
+    // -1 if the point is outside the dropdown rectangle. Item index counts
+    // separators, so the caller must check whether the corresponding label
+    // is empty before activating. The toggle bools mirror the live shortcut
+    // text used by DrawDropdownMenu so the rect width is computed identically.
+    int HitTestDropdownItem(int menuIdx, int cellCol, int cellRow,
+                            int screenColumns,
+                            bool wordWrap, bool showWordCount,
+                            bool spellCheckEnabled, bool highlightMisspelled) const;
+
+    // Dialog hit-testing.
+    // Each dialog has its own geometry, so each gets a dedicated hit-tester
+    // returning an enum describing what was clicked. Callers also use the
+    // *DialogRect helpers to detect click-outside-the-dialog (= cancel).
+    struct Rect { int x = 0, y = 0, w = 0, h = 0; bool Contains(int c, int r) const
+                  { return c >= x && c < x + w && r >= y && r < y + h; } };
+
+    Rect InputDialogRect    (int screenColumns) const;
+    Rect FindDialogRect     (int screenColumns) const;
+    Rect WordCountDialogRect(int screenColumns) const;
+    Rect ConfirmDialogRect  (int screenColumns) const;
+    Rect FontDialogRect     (int screenColumns, int faceCount, int sizeCount) const;
+    Rect HelpScreenRect     (int screenColumns) const;
+    Rect AboutScreenRect    (int screenColumns) const;
+
+    enum class InputHit { None, OkHint, CancelHint };
+    InputHit HitTestInputDialog(int cellCol, int cellRow, int screenColumns) const;
+
+    enum class FindHit { None, InputField, Checkbox, OkHint, CancelHint };
+    FindHit HitTestFindDialog(int cellCol, int cellRow, int screenColumns) const;
+
+    enum class WordCountHit { None, Checkbox, CloseHint };
+    WordCountHit HitTestWordCountDialog(int cellCol, int cellRow, int screenColumns) const;
+
+    enum class FontHit { None, FaceRow, SizeRow, ApplyHint, CancelHint };
+    struct FontDialogClick { FontHit hit = FontHit::None; int index = -1; };
+    FontDialogClick HitTestFontDialog(int cellCol, int cellRow, int screenColumns,
+                                       int faceCount, int sizeCount) const;
+
+    enum class ConfirmHit { None, Yes, No, Cancel };
+    ConfirmHit HitTestConfirmDialog(int cellCol, int cellRow, int screenColumns,
+                                     const std::string& hint) const;
+
 private:
     const Theme& m_theme;
     Layout       m_layout;
