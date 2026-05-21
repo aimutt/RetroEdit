@@ -40,6 +40,7 @@ add_executable(RetroEdit
     src/editor/Dictionary.gen.cpp
     src/platform/AppData.cpp
     src/platform/Beep.cpp
+    src/platform/Print.cpp
 )
 
 target_compile_options(RetroEdit PRIVATE
@@ -56,7 +57,9 @@ target_include_directories(RetroEdit PRIVATE src)
 target_link_libraries(RetroEdit PRIVATE
     SDL3::SDL3
     SDL3_ttf::SDL3_ttf
-    $<$<PLATFORM_ID:Windows>:Winmm>   # PlaySound, used by src/platform/Beep.cpp
+    $<$<PLATFORM_ID:Windows>:Winmm>     # PlaySound, used by src/platform/Beep.cpp
+    $<$<PLATFORM_ID:Windows>:Gdi32>     # CreateDC/TextOut/etc., used by src/platform/Print.cpp
+    $<$<PLATFORM_ID:Windows>:Winspool>  # EnumPrinters/OpenPrinter/etc., used by src/platform/Print.cpp
 )
 
 # Copy SDL3.dll and SDL3_ttf.dll next to the executable after each build

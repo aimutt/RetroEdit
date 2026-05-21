@@ -528,6 +528,10 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
             if (ctrl) NewFile();
             break;
 
+        case SDL_SCANCODE_P:
+            if (ctrl) OpenPrintDialog();
+            break;
+
         case SDL_SCANCODE_F2:
             SaveDocument();
             break;
@@ -618,6 +622,53 @@ void Application::HandlePromptKeyDown(const SDL_KeyboardEvent& key)
             case SDL_SCANCODE_BACKSPACE:
                 if (m_findDialogFocus == 0 && !m_promptText.empty())
                     m_promptText.pop_back();
+                return;
+            default:
+                return;
+        }
+    }
+
+    // Print dialog — Tab cycles fields, Up/Down adjusts, Space toggles radio
+    // groups, digits/'.' edit numeric fields, Enter prints, Esc cancels.
+    if (m_promptMode == PromptMode::PrintDialog)
+    {
+        const bool shift = (key.mod & SDL_KMOD_SHIFT) != 0;
+        switch (key.scancode)
+        {
+            case SDL_SCANCODE_TAB:
+                PrintCycleField(shift ? -1 : +1);
+                return;
+            case SDL_SCANCODE_UP:
+                PrintAdjustField(+1);
+                return;
+            case SDL_SCANCODE_DOWN:
+                PrintAdjustField(-1);
+                return;
+            case SDL_SCANCODE_LEFT:
+                if (m_printFocus == PrintField::Printer)
+                    PrintAdjustField(-1);
+                return;
+            case SDL_SCANCODE_RIGHT:
+                if (m_printFocus == PrintField::Printer)
+                    PrintAdjustField(+1);
+                return;
+            case SDL_SCANCODE_SPACE:
+                if (m_printFocus == PrintField::RangeMode ||
+                    m_printFocus == PrintField::Orientation)
+                {
+                    PrintAdjustField(+1);
+                    m_swallowNextTextInput = true; // drop the literal space
+                    return;
+                }
+                break;
+            case SDL_SCANCODE_BACKSPACE:
+                PrintBackspace();
+                return;
+            case SDL_SCANCODE_RETURN:
+                ClosePrintDialog(true);
+                return;
+            case SDL_SCANCODE_ESCAPE:
+                ClosePrintDialog(false);
                 return;
             default:
                 return;
@@ -893,6 +944,91 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
         return true;
     }
 
+    // Print dialog
+    if (m_promptMode == PromptMode::PrintDialog)
+    {
+        auto rect = m_ui->PrintDialogRect(m_screenColumns);
+        if (!rect.Contains(cellCol, cellRow))
+        {
+            ClosePrintDialog(false);
+            m_needsRedraw = true;
+            return true;
+        }
+        auto hit = m_ui->HitTestPrintDialog(cellCol, cellRow, m_screenColumns);
+        switch (hit)
+        {
+            case RetroUi::PrintHit::PrinterPrev:
+                m_printFocus = PrintField::Printer;
+                PrintAdjustField(-1);
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::PrinterNext:
+                m_printFocus = PrintField::Printer;
+                PrintAdjustField(+1);
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::Copies:
+                m_printFocus = PrintField::Copies;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::RangeAll:
+                m_printFocus = PrintField::RangeMode;
+                m_printRequest.allPages = true;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::RangeCustom:
+                m_printFocus = PrintField::RangeMode;
+                m_printRequest.allPages = false;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::RangeFrom:
+                m_printFocus = PrintField::RangeFrom;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::RangeTo:
+                m_printFocus = PrintField::RangeTo;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::Portrait:
+                m_printFocus = PrintField::Orientation;
+                m_printRequest.orientation = PrintOrientation::Portrait;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::Landscape:
+                m_printFocus = PrintField::Orientation;
+                m_printRequest.orientation = PrintOrientation::Landscape;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::MarginTop:
+                m_printFocus = PrintField::MarginTop;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::MarginBottom:
+                m_printFocus = PrintField::MarginBottom;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::MarginLeft:
+                m_printFocus = PrintField::MarginLeft;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::MarginRight:
+                m_printFocus = PrintField::MarginRight;
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::OkHint:
+                ClosePrintDialog(true);
+                m_needsRedraw = true;
+                break;
+            case RetroUi::PrintHit::CancelHint:
+                ClosePrintDialog(false);
+                m_needsRedraw = true;
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
     return false; // no dialog active — caller falls through to menu handling
 }
 
@@ -1025,6 +1161,11 @@ void Application::HandleTextInput(const char* text)
         else if (m_promptMode == PromptMode::Find && m_findDialogFocus == 0)
         {
             m_promptText += text;
+        }
+        else if (m_promptMode == PromptMode::PrintDialog)
+        {
+            for (const char* p = text; *p; ++p)
+                PrintTextEdit(*p);
         }
         return;
     }
@@ -1601,7 +1742,8 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
                 case 1: StartOpenPrompt();  break;  // Open...
                 case 2: SaveDocument();     break;  // Save
                 case 3: StartSaveAsPrompt(); break; // Save As...
-                case 5: // Exit
+                case 4: OpenPrintDialog();  break;  // Print...
+                case 6: // Exit
                     RequestExit();
                     break;
                 default: break;
@@ -1973,6 +2115,229 @@ void Application::SaveGlobalSettings()
 }
 
 // ---------------------------------------------------------------------------
+// Print
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    std::string FormatMarginText(double v)
+    {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%.2f", v);
+        return buf;
+    }
+
+    bool IsNumericField(PrintField f)
+    {
+        switch (f)
+        {
+            case PrintField::Copies:
+            case PrintField::RangeFrom:
+            case PrintField::RangeTo:
+            case PrintField::MarginTop:
+            case PrintField::MarginBottom:
+            case PrintField::MarginLeft:
+            case PrintField::MarginRight:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool IsMarginField(PrintField f)
+    {
+        switch (f)
+        {
+            case PrintField::MarginTop:
+            case PrintField::MarginBottom:
+            case PrintField::MarginLeft:
+            case PrintField::MarginRight:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    int MarginIndex(PrintField f)
+    {
+        switch (f)
+        {
+            case PrintField::MarginTop:    return 0;
+            case PrintField::MarginBottom: return 1;
+            case PrintField::MarginLeft:   return 2;
+            case PrintField::MarginRight:  return 3;
+            default:                       return -1;
+        }
+    }
+
+    int ParseIntOr(const std::string& s, int def)
+    {
+        if (s.empty()) return def;
+        try { return std::stoi(s); } catch (...) { return def; }
+    }
+
+    double ParseDoubleOr(const std::string& s, double def)
+    {
+        if (s.empty()) return def;
+        try { return std::stod(s); } catch (...) { return def; }
+    }
+}
+
+void Application::OpenPrintDialog()
+{
+    m_printerList = EnumeratePrinters();
+    if (m_printerList.empty())
+    {
+        m_statusMessage = "No printers installed.";
+        return;
+    }
+
+    // Find current printer in the list, default to 0.
+    m_printPrinterIdx = 0;
+    if (!m_printRequest.printerName.empty())
+    {
+        for (int i = 0; i < static_cast<int>(m_printerList.size()); ++i)
+            if (m_printerList[i] == m_printRequest.printerName) { m_printPrinterIdx = i; break; }
+    }
+
+    m_printCopiesText      = std::to_string(std::max(1, m_printRequest.copies));
+    m_printFromText        = std::to_string(std::max(1, m_printRequest.pageFrom));
+    m_printToText          = std::to_string(std::max(1, m_printRequest.pageTo));
+    m_printMarginText[0]   = FormatMarginText(m_printRequest.margins.topIn);
+    m_printMarginText[1]   = FormatMarginText(m_printRequest.margins.bottomIn);
+    m_printMarginText[2]   = FormatMarginText(m_printRequest.margins.leftIn);
+    m_printMarginText[3]   = FormatMarginText(m_printRequest.margins.rightIn);
+    m_printFocus           = PrintField::Printer;
+
+    m_promptMode    = PromptMode::PrintDialog;
+    m_statusMessage.clear();
+}
+
+void Application::ClosePrintDialog(bool commit)
+{
+    if (!commit)
+    {
+        m_promptMode    = PromptMode::None;
+        m_statusMessage = "Ready";
+        return;
+    }
+
+    // Parse and clamp edit strings into the request.
+    int copies = std::clamp(ParseIntOr(m_printCopiesText, 1), 1, 99);
+    int from   = std::max(1, ParseIntOr(m_printFromText, 1));
+    int to     = std::max(from, ParseIntOr(m_printToText, from));
+    auto clampMargin = [](double v) { return std::clamp(v, 0.0, 5.0); };
+
+    m_printRequest.copies      = copies;
+    m_printRequest.pageFrom    = from;
+    m_printRequest.pageTo      = to;
+    m_printRequest.margins.topIn    = clampMargin(ParseDoubleOr(m_printMarginText[0], 0.5));
+    m_printRequest.margins.bottomIn = clampMargin(ParseDoubleOr(m_printMarginText[1], 0.5));
+    m_printRequest.margins.leftIn   = clampMargin(ParseDoubleOr(m_printMarginText[2], 0.75));
+    m_printRequest.margins.rightIn  = clampMargin(ParseDoubleOr(m_printMarginText[3], 0.75));
+    m_printRequest.printerName  = m_printerList[m_printPrinterIdx];
+    m_printRequest.documentName = m_document->DisplayName();
+
+    m_promptMode    = PromptMode::None;
+    m_statusMessage = "Printing...";
+    // Repaint so the user sees "Printing..." while the synchronous job runs.
+    Render();
+
+    m_statusMessage = PrintDocument(m_document->Buffer(), m_printRequest);
+}
+
+void Application::PrintCycleField(int dir)
+{
+    int idx = static_cast<int>(m_printFocus);
+    int n   = static_cast<int>(PrintField::Count);
+    idx = ((idx + dir) % n + n) % n;
+    m_printFocus = static_cast<PrintField>(idx);
+}
+
+void Application::PrintAdjustField(int dir)
+{
+    auto bumpInt = [&](std::string& s, int lo, int hi) {
+        int v = std::clamp(ParseIntOr(s, lo) + dir, lo, hi);
+        s = std::to_string(v);
+    };
+    auto bumpMargin = [&](std::string& s) {
+        double v = ParseDoubleOr(s, 0.5) + 0.05 * dir;
+        v = std::clamp(v, 0.0, 5.0);
+        s = FormatMarginText(v);
+    };
+
+    switch (m_printFocus)
+    {
+        case PrintField::Printer:
+        {
+            int n = static_cast<int>(m_printerList.size());
+            if (n > 0) m_printPrinterIdx = ((m_printPrinterIdx + dir) % n + n) % n;
+            break;
+        }
+        case PrintField::Copies:      bumpInt(m_printCopiesText, 1, 99); break;
+        case PrintField::RangeMode:
+            m_printRequest.allPages = !m_printRequest.allPages;
+            break;
+        case PrintField::RangeFrom:   bumpInt(m_printFromText, 1, 9999); break;
+        case PrintField::RangeTo:     bumpInt(m_printToText,   1, 9999); break;
+        case PrintField::Orientation:
+            m_printRequest.orientation =
+                (m_printRequest.orientation == PrintOrientation::Portrait)
+                    ? PrintOrientation::Landscape : PrintOrientation::Portrait;
+            break;
+        case PrintField::MarginTop:    bumpMargin(m_printMarginText[0]); break;
+        case PrintField::MarginBottom: bumpMargin(m_printMarginText[1]); break;
+        case PrintField::MarginLeft:   bumpMargin(m_printMarginText[2]); break;
+        case PrintField::MarginRight:  bumpMargin(m_printMarginText[3]); break;
+        default: break;
+    }
+}
+
+void Application::PrintTextEdit(char ch)
+{
+    if (!IsNumericField(m_printFocus)) return;
+
+    bool isDigit = (ch >= '0' && ch <= '9');
+    bool isDot   = (ch == '.');
+    if (!isDigit && !(isDot && IsMarginField(m_printFocus))) return;
+
+    std::string* target = nullptr;
+    int          maxLen = 4;
+    switch (m_printFocus)
+    {
+        case PrintField::Copies:       target = &m_printCopiesText;    maxLen = 2; break;
+        case PrintField::RangeFrom:    target = &m_printFromText;      maxLen = 4; break;
+        case PrintField::RangeTo:      target = &m_printToText;        maxLen = 4; break;
+        case PrintField::MarginTop:    target = &m_printMarginText[0]; maxLen = 5; break;
+        case PrintField::MarginBottom: target = &m_printMarginText[1]; maxLen = 5; break;
+        case PrintField::MarginLeft:   target = &m_printMarginText[2]; maxLen = 5; break;
+        case PrintField::MarginRight:  target = &m_printMarginText[3]; maxLen = 5; break;
+        default: return;
+    }
+    if (!target) return;
+    if (isDot && target->find('.') != std::string::npos) return; // one dot max
+    if (static_cast<int>(target->size()) >= maxLen) return;
+    target->push_back(ch);
+}
+
+void Application::PrintBackspace()
+{
+    std::string* target = nullptr;
+    switch (m_printFocus)
+    {
+        case PrintField::Copies:       target = &m_printCopiesText;    break;
+        case PrintField::RangeFrom:    target = &m_printFromText;      break;
+        case PrintField::RangeTo:      target = &m_printToText;        break;
+        case PrintField::MarginTop:    target = &m_printMarginText[0]; break;
+        case PrintField::MarginBottom: target = &m_printMarginText[1]; break;
+        case PrintField::MarginLeft:   target = &m_printMarginText[2]; break;
+        case PrintField::MarginRight:  target = &m_printMarginText[3]; break;
+        default: break;
+    }
+    if (target && !target->empty()) target->pop_back();
+}
+
+// ---------------------------------------------------------------------------
 // Per-file settings sidecar
 //
 // To add a new persisted setting:
@@ -2214,6 +2579,18 @@ void Application::Render()
     // Spell check
     uiState.spellCheckEnabled   = m_spellCheckEnabled;
     uiState.highlightMisspelled = m_highlightMisspelled;
+
+    // Print dialog snapshot
+    uiState.printDialogActive   = (m_promptMode == PromptMode::PrintDialog);
+    uiState.printerList         = m_printerList;
+    uiState.printPrinterIdx     = m_printPrinterIdx;
+    uiState.printCopiesText     = m_printCopiesText;
+    uiState.printFromText       = m_printFromText;
+    uiState.printToText         = m_printToText;
+    for (int i = 0; i < 4; ++i) uiState.printMarginText[i] = m_printMarginText[i];
+    uiState.printAllPages       = m_printRequest.allPages;
+    uiState.printOrientation    = (m_printRequest.orientation == PrintOrientation::Landscape) ? 1 : 0;
+    uiState.printFocusField     = static_cast<int>(m_printFocus);
     if (m_highlightMisspelled)
     {
         // Tokenize each visible buffer line and record misspelled spans.

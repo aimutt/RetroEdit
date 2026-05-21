@@ -14,9 +14,11 @@
 #include "editor/Selection.h"
 #include "editor/UndoHistory.h"
 #include "editor/WordWrap.h"
+#include "platform/Print.h"
 #include <SDL3/SDL.h>
 #include <memory>
 #include <string>
+#include <vector>
 
 enum class PromptMode
 {
@@ -37,6 +39,22 @@ enum class PromptMode
     AddWordDialog,  // text input -> Dictionary::AddWord
     RemoveWordDialog,// text input -> Dictionary::RemoveWord
     CheckWordDialog,// text input -> Dictionary::Contains, result in status bar
+    PrintDialog,    // full print dialog (printer, copies, range, orientation, margins)
+};
+
+// Fields in the Print dialog, ordered for Tab cycling.
+enum class PrintField {
+    Printer,
+    Copies,
+    RangeMode,    // All vs Custom (Space toggles)
+    RangeFrom,
+    RangeTo,
+    Orientation,  // Portrait vs Landscape (Space toggles)
+    MarginTop,
+    MarginBottom,
+    MarginLeft,
+    MarginRight,
+    Count         // sentinel — count of cyclable fields
 };
 
 class Application
@@ -145,6 +163,14 @@ private:
     void CheckJustCompletedWord();
     void SaveUserDictionary();
 
+    // Print
+    void OpenPrintDialog();
+    void ClosePrintDialog(bool commit);
+    void PrintCycleField(int dir);                  // Tab / Shift-Tab
+    void PrintAdjustField(int dir);                 // Up / Down (or </> printer)
+    void PrintTextEdit(char ch);                    // digit or '.'
+    void PrintBackspace();
+
     // Global app settings (persisted under %LOCALAPPDATA%\RetroEdit\)
     void LoadGlobalSettings();
     void SaveGlobalSettings();
@@ -202,6 +228,17 @@ private:
     bool         m_spellCheckEnabled    = false;
     bool         m_highlightMisspelled  = false;
     Dictionary   m_dictionary;
+
+    // Print dialog state — populated when OpenPrintDialog runs, persists
+    // across invocations within the session so the user's last choices stick.
+    PrintRequest             m_printRequest;
+    std::vector<std::string> m_printerList;
+    int                      m_printPrinterIdx = 0;
+    PrintField               m_printFocus      = PrintField::Printer;
+    std::string              m_printCopiesText;
+    std::string              m_printFromText;
+    std::string              m_printToText;
+    std::string              m_printMarginText[4]; // top, bottom, left, right
 
     Layout                          m_layout;
     Theme                           m_theme;
