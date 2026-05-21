@@ -170,6 +170,36 @@ void Application::DispatchEvent(const SDL_Event& event)
             HandleWindowResized(event.window.data1, event.window.data2);
             m_needsRedraw = true;
             break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        {
+            int cw = m_renderer ? m_renderer->CellWidth()  : 0;
+            int ch = m_renderer ? m_renderer->CellHeight() : 0;
+            if (cw > 0 && ch > 0)
+            {
+                HandleMouseDown(static_cast<int>(event.button.x) / cw,
+                                static_cast<int>(event.button.y) / ch,
+                                event.button.button);
+            }
+            // m_needsRedraw is set inside HandleMouseDown only when state
+            // actually changes — clicks that hit nothing don't force repaints.
+            break;
+        }
+        case SDL_EVENT_MOUSE_MOTION:
+        {
+            // Only routed when a menu is active — keeps the no-menu hot path
+            // free of any per-motion work.
+            if (m_promptMode == PromptMode::MenuBar || m_promptMode == PromptMode::MenuOpen)
+            {
+                int cw = m_renderer ? m_renderer->CellWidth()  : 0;
+                int ch = m_renderer ? m_renderer->CellHeight() : 0;
+                if (cw > 0 && ch > 0)
+                {
+                    HandleMouseMotion(static_cast<int>(event.motion.x) / cw,
+                                      static_cast<int>(event.motion.y) / ch);
+                }
+            }
+            break;
+        }
     }
 }
 
@@ -243,23 +273,8 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
                 m_fontDialogFocusColumn = 1 - m_fontDialogFocusColumn;
                 break;
             case SDL_SCANCODE_RETURN:
-            {
-                FontSettings choice{
-                    static_cast<FontFace>(m_fontDialogFaceIdx),
-                    FontSizeAt(m_fontDialogSizeIdx)
-                };
-                m_promptMode = PromptMode::None;
-                if (!(choice == m_fontSettings))
-                {
-                    ApplyFontSettings(choice);
-                    m_statusMessage = "Font changed";
-                }
-                else
-                {
-                    m_statusMessage = "Ready";
-                }
+                ApplyFontDialogSelection();
                 break;
-            }
             case SDL_SCANCODE_ESCAPE:
                 m_promptMode    = PromptMode::None;
                 m_statusMessage = "Ready";
@@ -548,91 +563,23 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
 
 void Application::HandlePromptKeyDown(const SDL_KeyboardEvent& key)
 {
-    // Dirty-exit: 3-way Save / Discard / Cancel
-    if (m_promptMode == PromptMode::ConfirmExit)
+    // Confirm dialogs all share Y/N/Esc semantics — keyboard path delegates to
+    // the same ResolveConfirmYes / ResolveConfirmNo helpers used by the mouse
+    // dispatcher so the two paths can't diverge.
+    if (m_promptMode == PromptMode::ConfirmExit      ||
+        m_promptMode == PromptMode::ConfirmExitClean ||
+        m_promptMode == PromptMode::ConfirmNew       ||
+        m_promptMode == PromptMode::ConfirmWordWrap)
     {
         switch (key.scancode)
         {
             case SDL_SCANCODE_Y:
-                // Save and exit. If no filename, chain into Save As dialog
-                // and exit on its successful commit.
-                m_promptMode = PromptMode::None;
                 m_swallowNextTextInput = true;
-                if (m_document->Filename().empty())
-                {
-                    m_exitAfterSave = true;
-                    StartSaveAsPrompt();
-                }
-                else if (m_document->Save())
-                {
-                    WriteSidecarForCurrentDocument();
-                    UpdateWindowTitle();
-                    m_running = false;
-                }
-                else
-                {
-                    m_statusMessage = "Error: could not save file";
-                }
+                ResolveConfirmYes();
                 break;
             case SDL_SCANCODE_N:
-                m_promptMode = PromptMode::None;
                 m_swallowNextTextInput = true;
-                m_running    = false;
-                break;
-            case SDL_SCANCODE_ESCAPE:
-                m_promptMode    = PromptMode::None;
-                m_statusMessage = "Ready";
-                break;
-            default:
-                break;
-        }
-        return;
-    }
-
-    // Word Wrap: 3-way Yes / No / Cancel
-    if (m_promptMode == PromptMode::ConfirmWordWrap)
-    {
-        switch (key.scancode)
-        {
-            case SDL_SCANCODE_Y:
-                m_promptMode = PromptMode::None;
-                m_swallowNextTextInput = true;
-                SetWordWrap(true);
-                WriteSidecarForCurrentDocument();
-                break;
-            case SDL_SCANCODE_N:
-                m_promptMode = PromptMode::None;
-                m_swallowNextTextInput = true;
-                SetWordWrap(false);
-                WriteSidecarForCurrentDocument();
-                break;
-            case SDL_SCANCODE_ESCAPE:
-                m_promptMode    = PromptMode::None;
-                m_statusMessage = "Ready";
-                break;
-            default:
-                break;
-        }
-        return;
-    }
-
-    // Clean-exit confirm and ConfirmNew: simple Y/N
-    if (m_promptMode == PromptMode::ConfirmExitClean || m_promptMode == PromptMode::ConfirmNew)
-    {
-        switch (key.scancode)
-        {
-            case SDL_SCANCODE_Y:
-                if (m_promptMode == PromptMode::ConfirmExitClean)
-                    m_running = false;
-                else
-                    NewFile();
-                m_promptMode = PromptMode::None;
-                m_swallowNextTextInput = true;
-                break;
-            case SDL_SCANCODE_N:
-                m_promptMode    = PromptMode::None;
-                m_statusMessage = "Ready";
-                m_swallowNextTextInput = true;
+                ResolveConfirmNo();
                 break;
             case SDL_SCANCODE_ESCAPE:
                 m_promptMode    = PromptMode::None;
@@ -747,6 +694,311 @@ void Application::HandleMenuKeyDown(const SDL_KeyboardEvent& key)
             break;
         default:
             break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mouse input
+// ---------------------------------------------------------------------------
+
+bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
+{
+    // Help / About overlays: any click anywhere closes them.
+    if (m_promptMode == PromptMode::HelpScreen || m_promptMode == PromptMode::AboutScreen)
+    {
+        m_promptMode  = PromptMode::None;
+        m_needsRedraw = true;
+        return true;
+    }
+
+    // Font picker
+    if (m_promptMode == PromptMode::FontDialog)
+    {
+        const int faceCount = FontFaceCount();
+        const int sizeCount = FontSizeCount();
+        auto rect = m_ui->FontDialogRect(m_screenColumns, faceCount, sizeCount);
+        if (!rect.Contains(cellCol, cellRow))
+        {
+            m_promptMode    = PromptMode::None;
+            m_statusMessage = "Ready";
+            m_needsRedraw   = true;
+            return true;
+        }
+        auto click = m_ui->HitTestFontDialog(cellCol, cellRow, m_screenColumns,
+                                             faceCount, sizeCount);
+        switch (click.hit)
+        {
+            case RetroUi::FontHit::FaceRow:
+                m_fontDialogFaceIdx     = click.index;
+                m_fontDialogFocusColumn = 0;
+                m_needsRedraw           = true;
+                break;
+            case RetroUi::FontHit::SizeRow:
+                m_fontDialogSizeIdx     = click.index;
+                m_fontDialogFocusColumn = 1;
+                m_needsRedraw           = true;
+                break;
+            case RetroUi::FontHit::ApplyHint:
+                ApplyFontDialogSelection();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::FontHit::CancelHint:
+                m_promptMode    = PromptMode::None;
+                m_statusMessage = "Ready";
+                m_needsRedraw   = true;
+                break;
+            default:
+                break; // inside dialog but on dead area — no-op
+        }
+        return true;
+    }
+
+    // Word Count dialog
+    if (m_promptMode == PromptMode::WordCountDialog)
+    {
+        auto rect = m_ui->WordCountDialogRect(m_screenColumns);
+        if (!rect.Contains(cellCol, cellRow))
+        {
+            m_promptMode  = PromptMode::None;
+            m_needsRedraw = true;
+            return true;
+        }
+        auto hit = m_ui->HitTestWordCountDialog(cellCol, cellRow, m_screenColumns);
+        if (hit == RetroUi::WordCountHit::Checkbox)
+        {
+            ToggleStatusBarWordCount();
+            m_needsRedraw = true;
+        }
+        else if (hit == RetroUi::WordCountHit::CloseHint)
+        {
+            m_promptMode  = PromptMode::None;
+            m_needsRedraw = true;
+        }
+        return true;
+    }
+
+    // Find dialog (input field + case-insensitive checkbox)
+    if (m_promptMode == PromptMode::Find)
+    {
+        auto rect = m_ui->FindDialogRect(m_screenColumns);
+        if (!rect.Contains(cellCol, cellRow))
+        {
+            CancelPrompt();
+            m_needsRedraw = true;
+            return true;
+        }
+        auto hit = m_ui->HitTestFindDialog(cellCol, cellRow, m_screenColumns);
+        switch (hit)
+        {
+            case RetroUi::FindHit::InputField:
+                m_findDialogFocus = 0;
+                m_needsRedraw     = true;
+                break;
+            case RetroUi::FindHit::Checkbox:
+                m_findDialogFocus     = 1;
+                m_findCaseInsensitive = !m_findCaseInsensitive;
+                m_needsRedraw         = true;
+                break;
+            case RetroUi::FindHit::OkHint:
+                CommitPrompt();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::FindHit::CancelHint:
+                CancelPrompt();
+                m_needsRedraw = true;
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
+    // Plain input dialogs (Open, SaveAs, AddWord, RemoveWord, CheckWord)
+    if (m_promptMode == PromptMode::Open             ||
+        m_promptMode == PromptMode::SaveAs           ||
+        m_promptMode == PromptMode::AddWordDialog    ||
+        m_promptMode == PromptMode::RemoveWordDialog ||
+        m_promptMode == PromptMode::CheckWordDialog)
+    {
+        auto rect = m_ui->InputDialogRect(m_screenColumns);
+        if (!rect.Contains(cellCol, cellRow))
+        {
+            CancelPrompt();
+            m_needsRedraw = true;
+            return true;
+        }
+        auto hit = m_ui->HitTestInputDialog(cellCol, cellRow, m_screenColumns);
+        if (hit == RetroUi::InputHit::OkHint)
+        {
+            CommitPrompt();
+            m_needsRedraw = true;
+        }
+        else if (hit == RetroUi::InputHit::CancelHint)
+        {
+            CancelPrompt();
+            m_needsRedraw = true;
+        }
+        // Inside the dialog but not on a hint token: no-op (input field is
+        // already focused; nothing else to switch to).
+        return true;
+    }
+
+    // Y/N confirm dialogs — outside-click cancels, hint clicks resolve.
+    if (m_promptMode == PromptMode::ConfirmExit      ||
+        m_promptMode == PromptMode::ConfirmExitClean ||
+        m_promptMode == PromptMode::ConfirmNew       ||
+        m_promptMode == PromptMode::ConfirmWordWrap)
+    {
+        auto rect = m_ui->ConfirmDialogRect(m_screenColumns);
+        if (!rect.Contains(cellCol, cellRow))
+        {
+            m_promptMode    = PromptMode::None;
+            m_statusMessage = "Ready";
+            m_needsRedraw   = true;
+            return true;
+        }
+        // Reproduce the hint string rendered in Render() for token hit-test.
+        std::string hint;
+        switch (m_promptMode)
+        {
+            case PromptMode::ConfirmExit:
+                hint = "[Y] Save     [N] Discard     [Esc] Cancel";
+                break;
+            case PromptMode::ConfirmWordWrap:
+                hint = "[Y] On      [N] Off      [Esc] Cancel";
+                break;
+            default:
+                hint.clear(); // DrawConfirmDialog falls back to "[Y] Yes      [N] No"
+                break;
+        }
+        auto hit = m_ui->HitTestConfirmDialog(cellCol, cellRow, m_screenColumns, hint);
+        switch (hit)
+        {
+            case RetroUi::ConfirmHit::Yes:
+                ResolveConfirmYes();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::ConfirmHit::No:
+                ResolveConfirmNo();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::ConfirmHit::Cancel:
+                m_promptMode    = PromptMode::None;
+                m_statusMessage = "Ready";
+                m_needsRedraw   = true;
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
+    return false; // no dialog active — caller falls through to menu handling
+}
+
+void Application::HandleMouseDown(int cellCol, int cellRow, Uint8 button)
+{
+    if (button != SDL_BUTTON_LEFT) return;
+
+    // Dialogs take priority — they're modal.
+    if (HandleDialogMouseDown(cellCol, cellRow)) return;
+
+    const bool menuOpen = (m_promptMode == PromptMode::MenuOpen);
+    const bool menuBar  = (m_promptMode == PromptMode::MenuBar);
+
+    // Click on the menu bar row → open / switch / toggle / no-op
+    if (cellRow == m_layout.ROW_MENUBAR)
+    {
+        int hit = m_ui->HitTestMenuBar(cellCol);
+        if (hit < 0)
+        {
+            if (menuOpen || menuBar) { CloseMenu(); m_needsRedraw = true; }
+            return;
+        }
+        if (menuOpen && hit == m_activeMenu)
+        {
+            CloseMenu();
+            m_needsRedraw = true;
+        }
+        else
+        {
+            OpenMenu(hit);
+            m_needsRedraw = true;
+        }
+        return;
+    }
+
+    // Click inside a dropdown → activate the item; click outside the dropdown
+    // while one is open → close it.
+    if (menuOpen)
+    {
+        int item = m_ui->HitTestDropdownItem(
+            m_activeMenu, cellCol, cellRow, m_screenColumns,
+            m_wordWrap, m_showWordCount,
+            m_spellCheckEnabled, m_highlightMisspelled);
+        if (item >= 0)
+        {
+            // ExecuteMenuItem already filters separators (empty label).
+            ExecuteMenuItem(m_activeMenu, item);
+            m_needsRedraw = true;
+        }
+        else
+        {
+            CloseMenu();
+            m_needsRedraw = true;
+        }
+        return;
+    }
+
+    // Menu-bar focused but no dropdown open: click anywhere off the bar
+    // cancels the focused state.
+    if (menuBar)
+    {
+        CloseMenu();
+        m_needsRedraw = true;
+    }
+}
+
+void Application::HandleMouseMotion(int cellCol, int cellRow)
+{
+    // Only called when a menu is active (see DispatchEvent gate).
+    if (cellRow == m_layout.ROW_MENUBAR)
+    {
+        int hit = m_ui->HitTestMenuBar(cellCol);
+        if (hit < 0 || hit == m_activeMenu) return;
+
+        if (m_promptMode == PromptMode::MenuOpen)
+        {
+            // Auto-switch dropdown to the menu under the cursor.
+            OpenMenu(hit);
+            m_needsRedraw = true;
+        }
+        else // MenuBar
+        {
+            m_activeMenu  = hit;
+            m_needsRedraw = true;
+        }
+        return;
+    }
+
+    if (m_promptMode == PromptMode::MenuOpen)
+    {
+        int item = m_ui->HitTestDropdownItem(
+            m_activeMenu, cellCol, cellRow, m_screenColumns,
+            m_wordWrap, m_showWordCount,
+            m_spellCheckEnabled, m_highlightMisspelled);
+        if (item >= 0 && item != m_activeItem)
+        {
+            // Skip separators — keep the previous highlighted item.
+            const auto& menus = GetMenuDefs();
+            if (m_activeMenu >= 0 && m_activeMenu < static_cast<int>(menus.size())
+                && item < static_cast<int>(menus[m_activeMenu].items.size())
+                && !menus[m_activeMenu].items[item].label.empty())
+            {
+                m_activeItem  = item;
+                m_needsRedraw = true;
+            }
+        }
     }
 }
 
@@ -1496,6 +1748,88 @@ void Application::OpenFontDialog()
     m_fontDialogFaceIdx     = static_cast<int>(m_fontSettings.face);
     m_fontDialogSizeIdx     = IndexOfFontSize(m_fontSettings.size);
     m_fontDialogFocusColumn = 0;
+}
+
+void Application::ApplyFontDialogSelection()
+{
+    FontSettings choice{
+        static_cast<FontFace>(m_fontDialogFaceIdx),
+        FontSizeAt(m_fontDialogSizeIdx)
+    };
+    m_promptMode = PromptMode::None;
+    if (!(choice == m_fontSettings))
+    {
+        ApplyFontSettings(choice);
+        m_statusMessage = "Font changed";
+    }
+    else
+    {
+        m_statusMessage = "Ready";
+    }
+}
+
+// Shared by the keyboard Y/N handlers and the mouse Yes/No clicks on confirm
+// dialogs. Reads m_promptMode to know which confirm is active, then resets it.
+void Application::ResolveConfirmYes()
+{
+    PromptMode mode = m_promptMode;
+    m_promptMode = PromptMode::None;
+    switch (mode)
+    {
+        case PromptMode::ConfirmExit:
+            // Save and exit. If no filename, chain into Save As dialog and
+            // exit on its successful commit.
+            if (m_document->Filename().empty())
+            {
+                m_exitAfterSave = true;
+                StartSaveAsPrompt();
+            }
+            else if (m_document->Save())
+            {
+                WriteSidecarForCurrentDocument();
+                UpdateWindowTitle();
+                m_running = false;
+            }
+            else
+            {
+                m_statusMessage = "Error: could not save file";
+            }
+            break;
+        case PromptMode::ConfirmExitClean:
+            m_running = false;
+            break;
+        case PromptMode::ConfirmNew:
+            NewFile();
+            break;
+        case PromptMode::ConfirmWordWrap:
+            SetWordWrap(true);
+            WriteSidecarForCurrentDocument();
+            break;
+        default:
+            break;
+    }
+}
+
+void Application::ResolveConfirmNo()
+{
+    PromptMode mode = m_promptMode;
+    m_promptMode = PromptMode::None;
+    switch (mode)
+    {
+        case PromptMode::ConfirmExit:
+            m_running = false; // discard and exit
+            break;
+        case PromptMode::ConfirmExitClean:
+        case PromptMode::ConfirmNew:
+            m_statusMessage = "Ready";
+            break;
+        case PromptMode::ConfirmWordWrap:
+            SetWordWrap(false);
+            WriteSidecarForCurrentDocument();
+            break;
+        default:
+            break;
+    }
 }
 
 void Application::OpenWordWrapDialog()

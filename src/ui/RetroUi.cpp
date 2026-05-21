@@ -5,7 +5,9 @@
 #include "render/FontSettings.h"
 #include <string>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <vector>
 
 RetroUi::RetroUi(const Theme& theme, const Layout& layout)
     : m_theme(theme), m_layout(layout)
@@ -296,6 +298,65 @@ void RetroUi::DrawBox(ScreenBuffer& buffer, int x, int y, int w, int h,
 // Dropdown menu
 // ---------------------------------------------------------------------------
 
+namespace
+{
+    // Effective shortcut text for an item — accounts for the Options menu's
+    // live On/Off toggles whose static `shortcut` field is empty. Used by both
+    // the width calc and the render path so the column doesn't get overrun
+    // when "Off" is wider than the (empty) static shortcut.
+    std::string LiveShortcut(int menuIdx, int itemIdx, const MenuItemDef& item,
+                             bool wordWrap, bool showWordCount,
+                             bool spellCheckEnabled, bool highlightMisspelled)
+    {
+        if (menuIdx == 6 && itemIdx == 1) return wordWrap            ? "On" : "Off";
+        if (menuIdx == 6 && itemIdx == 2) return showWordCount       ? "On" : "Off";
+        if (menuIdx == 6 && itemIdx == 3) return spellCheckEnabled   ? "On" : "Off";
+        if (menuIdx == 6 && itemIdx == 4) return highlightMisspelled ? "On" : "Off";
+        return item.shortcut;
+    }
+
+    struct DropdownRect { int startCol; int startRow; int outerWidth; int numItems; };
+
+    // Single source of truth for dropdown geometry, called by both
+    // DrawDropdownMenu and HitTestDropdownItem so the two cannot drift.
+    DropdownRect ComputeDropdownRect(int menuIdx, int screenColumns,
+                                     bool wordWrap, bool showWordCount,
+                                     bool spellCheckEnabled, bool highlightMisspelled,
+                                     const Layout& layout)
+    {
+        DropdownRect r{ 0, layout.ROW_SEP_TOP, 0, 0 };
+        const auto& menus = GetMenuDefs();
+        if (menuIdx < 0 || menuIdx >= static_cast<int>(menus.size())) return r;
+        const MenuDef& menu = menus[menuIdx];
+
+        int innerWidth = 16; // minimum
+        for (int i = 0; i < static_cast<int>(menu.items.size()); ++i)
+        {
+            const auto& item = menu.items[i];
+            if (item.label.empty()) continue;
+            int w = static_cast<int>(item.label.size());
+            std::string sc = LiveShortcut(menuIdx, i, item,
+                                          wordWrap, showWordCount,
+                                          spellCheckEnabled, highlightMisspelled);
+            if (!sc.empty())
+                w += static_cast<int>(sc.size()) + 2; // two-space gap
+            innerWidth = std::max(innerWidth, w);
+        }
+        innerWidth += 2; // one space padding each side
+        int outerWidth = innerWidth + 2; // left and right border chars
+
+        int startCol = menu.barCol - 1; // slight left offset to align with highlight
+        if (startCol + outerWidth > screenColumns)
+            startCol = screenColumns - outerWidth;
+        if (startCol < 0) startCol = 0;
+
+        r.startCol   = startCol;
+        r.outerWidth = outerWidth;
+        r.numItems   = static_cast<int>(menu.items.size());
+        return r;
+    }
+}
+
 void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem,
                                 const EditorUiState& state)
 {
@@ -303,41 +364,16 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
     if (menuIdx < 0 || menuIdx >= static_cast<int>(menus.size())) return;
     const MenuDef& menu = menus[menuIdx];
 
-    // Effective shortcut text for an item — accounts for the Options menu's
-    // live On/Off toggles whose static `shortcut` field is empty. The width
-    // calc and the render path both consult this so the column doesn't get
-    // overrun when "Off" is wider than the (empty) static shortcut.
-    auto effectiveShortcut = [&](int idx, const MenuItemDef& item) -> std::string {
-        if (menuIdx == 6 && idx == 1) return state.wordWrap            ? "On" : "Off";
-        if (menuIdx == 6 && idx == 2) return state.showWordCount       ? "On" : "Off";
-        if (menuIdx == 6 && idx == 3) return state.spellCheckEnabled   ? "On" : "Off";
-        if (menuIdx == 6 && idx == 4) return state.highlightMisspelled ? "On" : "Off";
-        return item.shortcut;
-    };
+    DropdownRect rect = ComputeDropdownRect(
+        menuIdx, buffer.Columns(),
+        state.wordWrap, state.showWordCount,
+        state.spellCheckEnabled, state.highlightMisspelled,
+        m_layout);
 
-    // Compute required inner width: label + gap + shortcut
-    int innerWidth = 16; // minimum
-    for (int i = 0; i < static_cast<int>(menu.items.size()); ++i)
-    {
-        const auto& item = menu.items[i];
-        if (item.label.empty()) continue;
-        int w = static_cast<int>(item.label.size());
-        std::string sc = effectiveShortcut(i, item);
-        if (!sc.empty())
-            w += static_cast<int>(sc.size()) + 2; // two-space gap
-        innerWidth = std::max(innerWidth, w);
-    }
-    innerWidth += 2; // one space padding each side
-    int outerWidth = innerWidth + 2; // left and right border chars
-
-    // Position: open below the menu bar title, clamped to screen
-    int startCol = menu.barCol - 1; // slight left offset to align with highlight
-    if (startCol + outerWidth > buffer.Columns())
-        startCol = buffer.Columns() - outerWidth;
-    if (startCol < 0) startCol = 0;
-
-    int startRow  = m_layout.ROW_SEP_TOP; // row 1, just below menu bar
-    int numItems  = static_cast<int>(menu.items.size());
+    int startCol  = rect.startCol;
+    int startRow  = rect.startRow;
+    int outerWidth = rect.outerWidth;
+    int numItems  = rect.numItems;
 
     Color fg = m_theme.normalText;
     Color bg = m_theme.background;
@@ -384,7 +420,10 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
 
             // Shortcut (right-aligned with one space from right border).
             // Options > Word Wrap shows live On/Off state.
-            std::string shortcut = effectiveShortcut(i, item);
+            std::string shortcut = LiveShortcut(menuIdx, i, item,
+                                                state.wordWrap, state.showWordCount,
+                                                state.spellCheckEnabled,
+                                                state.highlightMisspelled);
             if (!shortcut.empty())
             {
                 Color scFg = isHighlighted ? m_theme.reverseForeground : m_theme.dimText;
@@ -401,6 +440,276 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
     for (int c = 1; c < outerWidth - 1; ++c)
         buffer.PutChar(startCol + c, bottomRow, U'-', fg, bg);
     buffer.PutChar(startCol + outerWidth - 1, bottomRow, U'+', fg, bg);
+}
+
+// ---------------------------------------------------------------------------
+// Mouse hit-testing
+// ---------------------------------------------------------------------------
+
+int RetroUi::HitTestMenuBar(int cellCol) const
+{
+    const auto& menus = GetMenuDefs();
+    for (int i = 0; i < static_cast<int>(menus.size()); ++i)
+    {
+        const MenuDef& m = menus[i];
+        int start = m.barCol;
+        int end   = m.barCol + static_cast<int>(m.label.size()); // exclusive
+        if (cellCol >= start && cellCol < end)
+            return i;
+    }
+    return -1;
+}
+
+int RetroUi::HitTestDropdownItem(int menuIdx, int cellCol, int cellRow,
+                                 int screenColumns,
+                                 bool wordWrap, bool showWordCount,
+                                 bool spellCheckEnabled, bool highlightMisspelled) const
+{
+    DropdownRect rect = ComputeDropdownRect(
+        menuIdx, screenColumns,
+        wordWrap, showWordCount,
+        spellCheckEnabled, highlightMisspelled,
+        m_layout);
+    if (rect.outerWidth <= 0 || rect.numItems <= 0) return -1;
+
+    // Item rows sit between the top border (rect.startRow) and the bottom
+    // border (rect.startRow + 1 + rect.numItems). Each item is one row tall.
+    int itemRow = cellRow - rect.startRow - 1;
+    if (itemRow < 0 || itemRow >= rect.numItems) return -1;
+
+    if (cellCol < rect.startCol || cellCol >= rect.startCol + rect.outerWidth)
+        return -1;
+
+    return itemRow;
+}
+
+// ---------------------------------------------------------------------------
+// Dialog hit-testing
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // Centers a (w x h) rectangle within (screenColumns x screenRows), clamped
+    // to non-negative origin — mirroring the math every Draw*Dialog uses.
+    RetroUi::Rect CenteredRect(int screenColumns, int screenRows, int w, int h)
+    {
+        RetroUi::Rect r;
+        r.x = std::max(0, (screenColumns - w) / 2);
+        r.y = std::max(0, (screenRows     - h) / 2);
+        r.w = w;
+        r.h = h;
+        return r;
+    }
+
+    // Returns the uppercase contents of the [bracketed] token whose click
+    // region contains clickCol. Tokens span from their '[' to just before the
+    // next '[' (or end of string), so the user can click the bracket text
+    // OR the explanatory text immediately after it. Returns "" on miss.
+    // hintStartCol is the screen column where the first char of `hint` is rendered.
+    std::string TokenAt(const std::string& hint, int hintStartCol, int clickCol)
+    {
+        int rel = clickCol - hintStartCol;
+        if (rel < 0 || rel >= static_cast<int>(hint.size())) return {};
+
+        // Find every '[' in the hint.
+        std::vector<size_t> opens;
+        for (size_t i = 0; i < hint.size(); ++i)
+            if (hint[i] == '[') opens.push_back(i);
+        if (opens.empty()) return {};
+
+        // Which token region contains `rel`?
+        size_t which = static_cast<size_t>(-1);
+        for (size_t i = 0; i < opens.size(); ++i)
+        {
+            size_t lo = opens[i];
+            size_t hi = (i + 1 < opens.size()) ? opens[i + 1] : hint.size();
+            if (static_cast<size_t>(rel) >= lo && static_cast<size_t>(rel) < hi)
+            {
+                which = i;
+                break;
+            }
+        }
+        if (which == static_cast<size_t>(-1)) return {};
+
+        // Extract content between [ and ]
+        size_t lo = opens[which];
+        size_t close = hint.find(']', lo);
+        if (close == std::string::npos) return {};
+        std::string token = hint.substr(lo + 1, close - lo - 1);
+        for (auto& c : token)
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        return token;
+    }
+}
+
+RetroUi::Rect RetroUi::InputDialogRect(int screenColumns) const
+{
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, 56, 7);
+}
+
+RetroUi::Rect RetroUi::FindDialogRect(int screenColumns) const
+{
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, 60, 9);
+}
+
+RetroUi::Rect RetroUi::WordCountDialogRect(int screenColumns) const
+{
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, 56, 9);
+}
+
+RetroUi::Rect RetroUi::ConfirmDialogRect(int screenColumns) const
+{
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, 56, 7);
+}
+
+RetroUi::Rect RetroUi::FontDialogRect(int screenColumns, int faceCount, int sizeCount) const
+{
+    int listRows = std::max(faceCount, sizeCount);
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, 60, listRows + 5);
+}
+
+RetroUi::Rect RetroUi::HelpScreenRect(int screenColumns) const
+{
+    // Mirror DrawHelpScreen constants: 13 lines, col width 24, +4 chrome rows.
+    constexpr int numLines = 13;
+    constexpr int outerWidth  = 24 * 2 + 2;
+    constexpr int outerHeight = numLines + 4;
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, outerWidth, outerHeight);
+}
+
+RetroUi::Rect RetroUi::AboutScreenRect(int screenColumns) const
+{
+    // Mirror DrawAboutScreen constants: 12 lines + 2 chrome rows, innerWidth 38.
+    constexpr int numLines    = 12;
+    constexpr int outerWidth  = 38 + 2;
+    constexpr int outerHeight = numLines + 2;
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, outerWidth, outerHeight);
+}
+
+RetroUi::InputHit RetroUi::HitTestInputDialog(int cellCol, int cellRow, int screenColumns) const
+{
+    Rect r = InputDialogRect(screenColumns);
+    if (!r.Contains(cellCol, cellRow)) return InputHit::None;
+
+    // Hint sits at y + outerHeight - 2 (= y + 5), drawn at x + 2.
+    if (cellRow == r.y + r.h - 2)
+    {
+        std::string token = TokenAt("[Enter] OK    [Esc] Cancel", r.x + 2, cellCol);
+        if (token == "ENTER") return InputHit::OkHint;
+        if (token == "ESC")   return InputHit::CancelHint;
+    }
+    return InputHit::None;
+}
+
+RetroUi::FindHit RetroUi::HitTestFindDialog(int cellCol, int cellRow, int screenColumns) const
+{
+    Rect r = FindDialogRect(screenColumns);
+    if (!r.Contains(cellCol, cellRow)) return FindHit::None;
+
+    // Input field at y + 3, columns x+2 .. x + (outerWidth - 4) + 1 (inclusive of brackets)
+    if (cellRow == r.y + 3)
+    {
+        int inputX = r.x + 2;
+        int inputW = r.w - 4;
+        if (cellCol >= inputX && cellCol < inputX + inputW)
+            return FindHit::InputField;
+    }
+    // Checkbox row at y + 5 — full row click toggles for forgiveness.
+    if (cellRow == r.y + 5) return FindHit::Checkbox;
+
+    // Hint at y + outerHeight - 2 (= y + 7).
+    if (cellRow == r.y + r.h - 2)
+    {
+        std::string token = TokenAt(
+            "[Enter] Find  [Tab] Switch  [Space] Toggle  [Esc] Cancel",
+            r.x + 2, cellCol);
+        if (token == "ENTER") return FindHit::OkHint;
+        if (token == "ESC")   return FindHit::CancelHint;
+        if (token == "SPACE" || token == "TAB") return FindHit::Checkbox;
+    }
+    return FindHit::None;
+}
+
+RetroUi::WordCountHit RetroUi::HitTestWordCountDialog(int cellCol, int cellRow, int screenColumns) const
+{
+    Rect r = WordCountDialogRect(screenColumns);
+    if (!r.Contains(cellCol, cellRow)) return WordCountHit::None;
+
+    // Checkbox at y + 5
+    if (cellRow == r.y + 5) return WordCountHit::Checkbox;
+
+    // Hint at y + outerHeight - 2 (= y + 7)
+    if (cellRow == r.y + r.h - 2)
+    {
+        std::string token = TokenAt("[Space] Toggle  [Enter/Esc] Close",
+                                    r.x + 2, cellCol);
+        if (token == "SPACE") return WordCountHit::Checkbox;
+        // [Enter/Esc] both close — match the literal bracket text.
+        if (token == "ENTER/ESC") return WordCountHit::CloseHint;
+    }
+    return WordCountHit::None;
+}
+
+RetroUi::FontDialogClick RetroUi::HitTestFontDialog(int cellCol, int cellRow, int screenColumns,
+                                                     int faceCount, int sizeCount) const
+{
+    FontDialogClick out;
+    Rect r = FontDialogRect(screenColumns, faceCount, sizeCount);
+    if (!r.Contains(cellCol, cellRow)) return out;
+
+    // Mirror DrawFontDialog geometry exactly.
+    constexpr int faceColW = 28;
+    const int     sizeColW = r.w - 5 - faceColW;
+    const int     faceXLo  = r.x + 2;
+    const int     faceXHi  = r.x + 2 + faceColW;          // exclusive
+    const int     sizeXLo  = r.x + 2 + faceColW + 1;
+    const int     sizeXHi  = sizeXLo + sizeColW;          // exclusive
+
+    // Hint row first
+    if (cellRow == r.y + r.h - 2)
+    {
+        std::string token = TokenAt(
+            "[Up/Down] Move  [Tab] Switch  [Enter] Apply  [Esc] Cancel",
+            r.x + 2, cellCol);
+        if (token == "ENTER") { out.hit = FontHit::ApplyHint;  return out; }
+        if (token == "ESC")   { out.hit = FontHit::CancelHint; return out; }
+        return out;
+    }
+
+    // Item rows: y + 2 .. y + 2 + listRows - 1 (per column).
+    int idx = cellRow - (r.y + 2);
+
+    if (cellCol >= faceXLo && cellCol < faceXHi && idx >= 0 && idx < faceCount)
+    {
+        out.hit = FontHit::FaceRow;
+        out.index = idx;
+        return out;
+    }
+    if (cellCol >= sizeXLo && cellCol < sizeXHi && idx >= 0 && idx < sizeCount)
+    {
+        out.hit = FontHit::SizeRow;
+        out.index = idx;
+        return out;
+    }
+    return out;
+}
+
+RetroUi::ConfirmHit RetroUi::HitTestConfirmDialog(int cellCol, int cellRow, int screenColumns,
+                                                   const std::string& hint) const
+{
+    Rect r = ConfirmDialogRect(screenColumns);
+    if (!r.Contains(cellCol, cellRow)) return ConfirmHit::None;
+
+    if (cellRow == r.y + r.h - 2)
+    {
+        // Either the caller-provided hint or the default if empty.
+        const std::string effective = hint.empty() ? "[Y] Yes      [N] No" : hint;
+        std::string token = TokenAt(effective, r.x + 2, cellCol);
+        if (token == "Y")   return ConfirmHit::Yes;
+        if (token == "N")   return ConfirmHit::No;
+        if (token == "ESC") return ConfirmHit::Cancel;
+    }
+    return ConfirmHit::None;
 }
 
 // ---------------------------------------------------------------------------

@@ -59,6 +59,18 @@ private:
     void HandlePromptKeyDown(const SDL_KeyboardEvent& key);
     void HandleMenuKeyDown(const SDL_KeyboardEvent& key);
     void HandleTextInput(const char* text);
+    void HandleMouseDown(int cellCol, int cellRow, Uint8 button);
+    void HandleMouseMotion(int cellCol, int cellRow);
+    // Returns true if the click was consumed by an active dialog.
+    bool HandleDialogMouseDown(int cellCol, int cellRow);
+
+    // Shared by keyboard Y/N handlers and mouse-click Yes/No on confirm dialogs.
+    // Reads m_promptMode to know which confirm is active, then resets it.
+    void ResolveConfirmYes();
+    void ResolveConfirmNo();
+
+    // Shared by keyboard Enter and mouse Apply on the Font dialog.
+    void ApplyFontDialogSelection();
 
     // Navigation helpers
     void UpdateSelection(bool shift);
