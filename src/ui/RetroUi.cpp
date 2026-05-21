@@ -40,6 +40,9 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
     if (state.wordCountDialogActive)
         DrawWordCountDialog(buffer, state);
 
+    if (state.printDialogActive)
+        DrawPrintDialog(buffer, state);
+
     if (state.dialogActive)
     {
         if (state.dialogIsConfirm)
@@ -710,6 +713,252 @@ RetroUi::ConfirmHit RetroUi::HitTestConfirmDialog(int cellCol, int cellRow, int 
         if (token == "ESC") return ConfirmHit::Cancel;
     }
     return ConfirmHit::None;
+}
+
+// ---------------------------------------------------------------------------
+// Print dialog
+// ---------------------------------------------------------------------------
+//
+// Layout (outerWidth = 56, outerHeight = 16, all coordinates relative to the
+// dialog's (x, y)):
+//
+//   row 2  "Printer:"   '<' at col 14, name at col 16..49, '>' at col 51
+//   row 4  "Copies:"    "[ NN ]" at cols 14..19
+//   row 6  "Pages:"     "(*) All" at 14..20, "( ) From [N] To [N]" at 22..42
+//   row 8  "Orient.:"   "(*) Portrait" at 14..25, "( ) Landscape" at 29..41
+//   row 10 "Margins (in):"
+//   row 11 "  Top:  [0.50]    Bottom: [0.50]"
+//   row 12 "  Left: [0.75]    Right:  [0.75]"
+//   row 14 hint
+//
+// Numeric-field column ranges (rendered with surrounding brackets):
+//
+//   Copies      cols 14..19  (6 cells: "[ NN ]")
+//   Range From  cols 31..34  (4 cells: "[NN]")
+//   Range To    cols 39..42  (4 cells: "[NN]")
+//   Margin Top    row 11, cols 10..15  (6 cells: "[N.NN]")
+//   Margin Bottom row 11, cols 27..32  (6 cells)
+//   Margin Left   row 12, cols 10..15  (6 cells)
+//   Margin Right  row 12, cols 27..32  (6 cells)
+
+namespace
+{
+    constexpr int kPrintW = 56;
+    constexpr int kPrintH = 16;
+
+    // Column offsets (relative to dialog x).
+    constexpr int kPrintLabelCol  = 2;
+    constexpr int kPrintValueCol  = 14;
+    constexpr int kPrintPrinterArrLeft  = 14;
+    constexpr int kPrintPrinterArrRight = kPrintW - 5;  // col 51
+
+    // Hint row content (rendered at y + 14)
+    const char* const kPrintHint = "[Tab] Next  [Enter] Print  [Esc] Cancel";
+}
+
+RetroUi::Rect RetroUi::PrintDialogRect(int screenColumns) const
+{
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, kPrintW, kPrintH);
+}
+
+void RetroUi::DrawPrintDialog(ScreenBuffer& buffer, const EditorUiState& state)
+{
+    Rect r = PrintDialogRect(buffer.Columns());
+    const int x = r.x;
+    const int y = r.y;
+
+    Color fg     = m_theme.normalText;
+    Color bg     = m_theme.background;
+    Color bright = m_theme.brightText;
+    Color dim    = m_theme.dimText;
+
+    DrawBox(buffer, x, y, r.w, r.h, fg, bg);
+
+    // Title centred in top border
+    std::string title = " Print ";
+    int titleX = x + (r.w - static_cast<int>(title.size())) / 2;
+    buffer.WriteText(titleX, y, title, bright, bg);
+
+    auto isFocus = [&](int field) { return state.printFocusField == field; };
+    auto focusColors = [&](bool focused, Color& outFg, Color& outBg) {
+        outFg = focused ? m_theme.reverseForeground : bright;
+        outBg = focused ? m_theme.reverseBackground : bg;
+    };
+
+    // Field index integers must match the PrintField enum in Application.h.
+    enum {
+        F_Printer = 0, F_Copies, F_RangeMode, F_RangeFrom, F_RangeTo,
+        F_Orientation, F_MarginTop, F_MarginBottom, F_MarginLeft, F_MarginRight
+    };
+
+    auto drawBracketField = [&](int row, int col, int width,
+                                 const std::string& text, bool focused) {
+        Color tfg, tbg;
+        focusColors(focused, tfg, tbg);
+        buffer.PutChar(x + col,             y + row, U'[', dim, bg);
+        buffer.PutChar(x + col + width - 1, y + row, U']', dim, bg);
+        // Fill interior with bg color (focused or not)
+        for (int c = 1; c < width - 1; ++c)
+            buffer.PutChar(x + col + c, y + row, U' ', tfg, tbg);
+        // Right-align text inside the brackets
+        int inner    = width - 2;
+        int textCols = std::min(static_cast<int>(text.size()), inner);
+        int startC   = col + 1 + (inner - textCols);
+        for (int i = 0; i < textCols; ++i)
+            buffer.PutChar(x + startC + i, y + row,
+                           static_cast<char32_t>(static_cast<unsigned char>(text[i])),
+                           tfg, tbg);
+    };
+
+    // Row 2 — Printer
+    buffer.WriteText(x + kPrintLabelCol, y + 2, "Printer:", fg, bg);
+    {
+        bool focused = isFocus(F_Printer);
+        Color afg = focused ? m_theme.reverseForeground : dim;
+        Color abg = focused ? m_theme.reverseBackground : bg;
+        buffer.PutChar(x + kPrintPrinterArrLeft,  y + 2, U'<', afg, abg);
+        buffer.PutChar(x + kPrintPrinterArrRight, y + 2, U'>', afg, abg);
+        // Name slot between arrows, fill with bg if focused
+        int slotStart = kPrintPrinterArrLeft + 2;
+        int slotWidth = kPrintPrinterArrRight - 1 - slotStart;
+        if (slotWidth > 0)
+        {
+            Color tfg, tbg;
+            focusColors(focused, tfg, tbg);
+            for (int c = 0; c < slotWidth; ++c)
+                buffer.PutChar(x + slotStart + c, y + 2, U' ', tfg, tbg);
+            std::string name;
+            if (state.printPrinterIdx >= 0
+                && state.printPrinterIdx < static_cast<int>(state.printerList.size()))
+                name = state.printerList[state.printPrinterIdx];
+            if (static_cast<int>(name.size()) > slotWidth) name.resize(slotWidth);
+            buffer.WriteText(x + slotStart, y + 2, name, tfg, tbg);
+        }
+    }
+
+    // Row 4 — Copies
+    buffer.WriteText(x + kPrintLabelCol, y + 4, "Copies:", fg, bg);
+    drawBracketField(4, kPrintValueCol, 6, state.printCopiesText, isFocus(F_Copies));
+
+    // Row 6 — Pages range
+    buffer.WriteText(x + kPrintLabelCol, y + 6, "Pages:", fg, bg);
+    {
+        // All radio
+        bool focused = isFocus(F_RangeMode);
+        Color rfg, rbg;
+        focusColors(focused, rfg, rbg);
+        const char* mark = state.printAllPages ? "(*)" : "( )";
+        buffer.WriteText(x + 14, y + 6, mark, rfg, rbg);
+        buffer.WriteText(x + 18, y + 6, "All", fg, bg);
+
+        // From/To radio
+        const char* mark2 = state.printAllPages ? "( )" : "(*)";
+        buffer.WriteText(x + 22, y + 6, mark2, rfg, rbg);
+        buffer.WriteText(x + 26, y + 6, "From", fg, bg);
+        drawBracketField(6, 31, 4, state.printFromText, isFocus(F_RangeFrom));
+        buffer.WriteText(x + 36, y + 6, "To", fg, bg);
+        drawBracketField(6, 39, 4, state.printToText, isFocus(F_RangeTo));
+    }
+
+    // Row 8 — Orientation
+    buffer.WriteText(x + kPrintLabelCol, y + 8, "Orientation:", fg, bg);
+    {
+        bool focused = isFocus(F_Orientation);
+        Color rfg, rbg;
+        focusColors(focused, rfg, rbg);
+        const char* p = (state.printOrientation == 0) ? "(*)" : "( )";
+        const char* l = (state.printOrientation == 0) ? "( )" : "(*)";
+        buffer.WriteText(x + 14, y + 8, p, rfg, rbg);
+        buffer.WriteText(x + 18, y + 8, "Portrait", fg, bg);
+        buffer.WriteText(x + 29, y + 8, l, rfg, rbg);
+        buffer.WriteText(x + 33, y + 8, "Landscape", fg, bg);
+    }
+
+    // Row 10 — Margins label
+    buffer.WriteText(x + kPrintLabelCol, y + 10, "Margins (in):", fg, bg);
+
+    // Row 11 — Top + Bottom
+    buffer.WriteText(x + 4, y + 11, "Top:",    fg, bg);
+    drawBracketField(11, 10, 6, state.printMarginText[0], isFocus(F_MarginTop));
+    buffer.WriteText(x + 19, y + 11, "Bottom:", fg, bg);
+    drawBracketField(11, 27, 6, state.printMarginText[1], isFocus(F_MarginBottom));
+
+    // Row 12 — Left + Right
+    buffer.WriteText(x + 4, y + 12, "Left:",   fg, bg);
+    drawBracketField(12, 10, 6, state.printMarginText[2], isFocus(F_MarginLeft));
+    buffer.WriteText(x + 19, y + 12, "Right:", fg, bg);
+    drawBracketField(12, 27, 6, state.printMarginText[3], isFocus(F_MarginRight));
+
+    // Row 14 — Hint
+    buffer.WriteText(x + 2, y + 14, kPrintHint, dim, bg);
+}
+
+RetroUi::PrintHit RetroUi::HitTestPrintDialog(int cellCol, int cellRow, int screenColumns) const
+{
+    Rect r = PrintDialogRect(screenColumns);
+    if (!r.Contains(cellCol, cellRow)) return PrintHit::None;
+
+    const int rx = cellCol - r.x;
+    const int ry = cellRow - r.y;
+
+    auto in = [&](int col, int width) {
+        return rx >= col && rx < col + width;
+    };
+
+    // Hint row
+    if (ry == 14)
+    {
+        std::string tok = TokenAt(kPrintHint, r.x + 2, cellCol);
+        if (tok == "ENTER") return PrintHit::OkHint;
+        if (tok == "ESC")   return PrintHit::CancelHint;
+        return PrintHit::None;
+    }
+
+    // Printer row
+    if (ry == 2)
+    {
+        if (in(kPrintPrinterArrLeft, 1))  return PrintHit::PrinterPrev;
+        if (in(kPrintPrinterArrRight, 1)) return PrintHit::PrinterNext;
+        // Click on the printer name itself also cycles forward (convenience).
+        if (in(kPrintPrinterArrLeft + 1,
+               kPrintPrinterArrRight - kPrintPrinterArrLeft - 1))
+            return PrintHit::PrinterNext;
+        return PrintHit::None;
+    }
+
+    // Copies row
+    if (ry == 4 && in(kPrintValueCol, 6)) return PrintHit::Copies;
+
+    // Pages row
+    if (ry == 6)
+    {
+        if (in(14, 3) || in(18, 3)) return PrintHit::RangeAll;     // "(*) All" / "( ) All"
+        if (in(22, 3) || in(26, 4)) return PrintHit::RangeCustom;  // "( ) From"
+        if (in(31, 4))              return PrintHit::RangeFrom;
+        if (in(36, 2))              return PrintHit::RangeCustom;  // "To" label
+        if (in(39, 4))              return PrintHit::RangeTo;
+    }
+
+    // Orientation row
+    if (ry == 8)
+    {
+        if (in(14, 3) || in(18, 8)) return PrintHit::Portrait;
+        if (in(29, 3) || in(33, 9)) return PrintHit::Landscape;
+    }
+
+    // Margin rows
+    if (ry == 11)
+    {
+        if (in(10, 6)) return PrintHit::MarginTop;
+        if (in(27, 6)) return PrintHit::MarginBottom;
+    }
+    if (ry == 12)
+    {
+        if (in(10, 6)) return PrintHit::MarginLeft;
+        if (in(27, 6)) return PrintHit::MarginRight;
+    }
+
+    return PrintHit::None;
 }
 
 // ---------------------------------------------------------------------------

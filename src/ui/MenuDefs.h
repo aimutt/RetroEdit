@@ -34,6 +34,7 @@ inline const std::vector<MenuDef>& GetMenuDefs()
             { "Open...",      "^O"   },
             { "Save",         "^S"   },
             { "Save As...",   "^S+S" },
+            { "Print...",     "^P"   },
             { "",             ""     },
             { "Exit",         "Esc"  },
         }},

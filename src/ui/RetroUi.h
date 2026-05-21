@@ -69,6 +69,18 @@ struct EditorUiState
     bool highlightMisspelled = false;
     struct MisspelledSpan { int row; int col; int len; };
     std::vector<MisspelledSpan> misspelledSpans;
+
+    // Print dialog
+    bool        printDialogActive  = false;
+    int         printPrinterIdx    = 0;
+    std::vector<std::string> printerList;
+    std::string printCopiesText;
+    std::string printFromText;
+    std::string printToText;
+    std::string printMarginText[4]; // top, bottom, left, right
+    bool        printAllPages      = true;
+    int         printOrientation   = 0;  // 0=Portrait, 1=Landscape
+    int         printFocusField    = 0;  // mirror PrintField as int
 };
 
 class RetroUi
@@ -125,6 +137,18 @@ public:
     ConfirmHit HitTestConfirmDialog(int cellCol, int cellRow, int screenColumns,
                                      const std::string& hint) const;
 
+    enum class PrintHit {
+        None,
+        PrinterPrev, PrinterNext,
+        Copies,
+        RangeAll, RangeCustom, RangeFrom, RangeTo,
+        Portrait, Landscape,
+        MarginTop, MarginBottom, MarginLeft, MarginRight,
+        OkHint, CancelHint
+    };
+    PrintHit HitTestPrintDialog(int cellCol, int cellRow, int screenColumns) const;
+    Rect     PrintDialogRect   (int screenColumns) const;
+
 private:
     const Theme& m_theme;
     Layout       m_layout;
@@ -151,5 +175,6 @@ private:
     void DrawFontDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawFindDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawWordCountDialog(ScreenBuffer& buffer, const EditorUiState& state);
+    void DrawPrintDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawBox(ScreenBuffer& buffer, int x, int y, int w, int h, Color fg, Color bg);
 };
