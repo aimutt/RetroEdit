@@ -1,5 +1,7 @@
 # RetroEdit Project Plan
 
+> **RetroEdit is the plain-text product** in a two-product family. For the WYSIWYG sibling that shares this repo's core code but ships as a separate EXE, see [RetroDocWriter.md](RetroDocWriter.md).
+
 ## Table of Contents
 
 - [Overview](#overview)

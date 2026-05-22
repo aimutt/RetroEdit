@@ -53,7 +53,6 @@ Application::Application()
     SDL_GetWindowSize(m_window->GetWindow(), &m_windowWidth, &m_windowHeight);
 
     m_renderer = std::make_unique<RetroRenderer>(m_window->GetRenderer(), m_fontSettings);
-    m_wysiwyg  = std::make_unique<WysiwygRenderer>(m_window->GetRenderer(), m_theme);
 
     m_screenColumns = ComputeScreenColumns(m_renderer->CellWidth());
     int rows        = ComputeScreenRows(m_renderer->CellHeight());
@@ -307,10 +306,9 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
             case SDL_SCANCODE_E: OpenMenu(1); return;   // Edit
             case SDL_SCANCODE_S: OpenMenu(2); return;   // Search
             case SDL_SCANCODE_V: OpenMenu(3); return;   // View
-            case SDL_SCANCODE_P: OpenMenu(4); return;   // Page
-            case SDL_SCANCODE_T: OpenMenu(5); return;   // Tools
-            case SDL_SCANCODE_O: OpenMenu(6); return;   // Options
-            case SDL_SCANCODE_H: OpenMenu(7); return;   // Help
+            case SDL_SCANCODE_T: OpenMenu(4); return;   // Tools
+            case SDL_SCANCODE_O: OpenMenu(5); return;   // Options
+            case SDL_SCANCODE_H: OpenMenu(6); return;   // Help
             default: return;
         }
     }
@@ -624,35 +622,6 @@ void Application::HandlePromptKeyDown(const SDL_KeyboardEvent& key)
             case SDL_SCANCODE_BACKSPACE:
                 if (m_findDialogFocus == 0 && !m_promptText.empty())
                     m_promptText.pop_back();
-                return;
-            default:
-                return;
-        }
-    }
-
-    // Margins dialog — four numeric fields, Tab cycles, Up/Down adjusts, digits/'.' edit.
-    if (m_promptMode == PromptMode::MarginsDialog)
-    {
-        const bool shift = (key.mod & SDL_KMOD_SHIFT) != 0;
-        switch (key.scancode)
-        {
-            case SDL_SCANCODE_TAB:
-                MarginCycleField(shift ? -1 : +1);
-                return;
-            case SDL_SCANCODE_UP:
-                MarginAdjustField(+1);
-                return;
-            case SDL_SCANCODE_DOWN:
-                MarginAdjustField(-1);
-                return;
-            case SDL_SCANCODE_BACKSPACE:
-                MarginBackspace();
-                return;
-            case SDL_SCANCODE_RETURN:
-                CloseMarginsDialog(true);
-                return;
-            case SDL_SCANCODE_ESCAPE:
-                CloseMarginsDialog(false);
                 return;
             default:
                 return;
@@ -975,30 +944,6 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
         return true;
     }
 
-    // Margins dialog
-    if (m_promptMode == PromptMode::MarginsDialog)
-    {
-        auto rect = m_ui->MarginsDialogRect(m_screenColumns);
-        if (!rect.Contains(cellCol, cellRow))
-        {
-            CloseMarginsDialog(false);
-            m_needsRedraw = true;
-            return true;
-        }
-        auto hit = m_ui->HitTestMarginsDialog(cellCol, cellRow, m_screenColumns);
-        switch (hit)
-        {
-            case RetroUi::MarginsHit::Top:    m_marginFocusIdx = 0; m_needsRedraw = true; break;
-            case RetroUi::MarginsHit::Bottom: m_marginFocusIdx = 1; m_needsRedraw = true; break;
-            case RetroUi::MarginsHit::Left:   m_marginFocusIdx = 2; m_needsRedraw = true; break;
-            case RetroUi::MarginsHit::Right:  m_marginFocusIdx = 3; m_needsRedraw = true; break;
-            case RetroUi::MarginsHit::OkHint:     CloseMarginsDialog(true);  m_needsRedraw = true; break;
-            case RetroUi::MarginsHit::CancelHint: CloseMarginsDialog(false); m_needsRedraw = true; break;
-            default: break;
-        }
-        return true;
-    }
-
     // Print dialog
     if (m_promptMode == PromptMode::PrintDialog)
     {
@@ -1126,8 +1071,7 @@ void Application::HandleMouseDown(int cellCol, int cellRow, Uint8 button)
         int item = m_ui->HitTestDropdownItem(
             m_activeMenu, cellCol, cellRow, m_screenColumns,
             m_wordWrap, m_showWordCount,
-            m_spellCheckEnabled, m_highlightMisspelled,
-            m_wysiwygEnabled);
+            m_spellCheckEnabled, m_highlightMisspelled);
         if (item >= 0)
         {
             // ExecuteMenuItem already filters separators (empty label).
@@ -1178,8 +1122,7 @@ void Application::HandleMouseMotion(int cellCol, int cellRow)
         int item = m_ui->HitTestDropdownItem(
             m_activeMenu, cellCol, cellRow, m_screenColumns,
             m_wordWrap, m_showWordCount,
-            m_spellCheckEnabled, m_highlightMisspelled,
-            m_wysiwygEnabled);
+            m_spellCheckEnabled, m_highlightMisspelled);
         if (item >= 0 && item != m_activeItem)
         {
             // Skip separators — keep the previous highlighted item.
@@ -1223,11 +1166,6 @@ void Application::HandleTextInput(const char* text)
         {
             for (const char* p = text; *p; ++p)
                 PrintTextEdit(*p);
-        }
-        else if (m_promptMode == PromptMode::MarginsDialog)
-        {
-            for (const char* p = text; *p; ++p)
-                MarginTextEdit(*p);
         }
         return;
     }
@@ -1283,13 +1221,6 @@ void Application::UpdateSelection(bool shift)
 
 int Application::NavigationWrapWidth() const
 {
-    if (m_wysiwygEnabled)
-    {
-        return WysiwygRenderer::ComputeCharsPerLine(
-            m_fontSettings.face,
-            FontSizePoints(m_fontSettings.size),
-            m_margins.leftIn, m_margins.rightIn);
-    }
     if (m_wordWrap) return m_screenColumns;
     return 0; // no wrap — Up/Down skip whole buffer rows
 }
@@ -1309,8 +1240,7 @@ void Application::MoveCursorUp()
     }
 
     // Wrap-aware: move one display row up using the same wrap width that
-    // produces the visible layout (cell-grid width for word-wrap mode, or
-    // WYSIWYG chars-per-line for WYSIWYG mode).
+    // produces the visible layout (cell-grid width when word-wrap is on).
     const std::string& curLine = m_document->Buffer().Line(m_cursor.row);
     auto starts = ComputeWrapStarts(curLine, width);
     int  segIdx = WrapSegmentForColumn(starts, m_cursor.column);
@@ -1863,16 +1793,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             }
             break;
 
-        case 4: // Format
-            switch (itemIdx)
-            {
-                case 0: ToggleWysiwyg();     break; // WYSIWYG toggle
-                case 1: OpenMarginsDialog(); break; // Margins...
-                default: break;
-            }
-            break;
-
-        case 5: // Tools
+        case 4: // Tools
             switch (itemIdx)
             {
                 case 0: OpenAddWordDialog();    break;
@@ -1882,7 +1803,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             }
             break;
 
-        case 6: // Options
+        case 5: // Options
             switch (itemIdx)
             {
                 case 0: OpenFontDialog();  break;   // Font...
@@ -1894,7 +1815,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             }
             break;
 
-        case 7: // Help
+        case 6: // Help
             switch (itemIdx)
             {
                 case 0: m_promptMode = PromptMode::HelpScreen;  break;
@@ -2291,20 +2212,10 @@ void Application::OpenPrintDialog()
     m_printCopiesText      = std::to_string(std::max(1, m_printRequest.copies));
     m_printFromText        = std::to_string(std::max(1, m_printRequest.pageFrom));
     m_printToText          = std::to_string(std::max(1, m_printRequest.pageTo));
-    // In WYSIWYG mode, seed the print dialog's margins from the document's
-    // WYSIWYG margins so "Print" out of the box matches what's on screen.
-    PrintMargins defaultMargins = m_printRequest.margins;
-    if (m_wysiwygEnabled)
-    {
-        defaultMargins.topIn    = m_margins.topIn;
-        defaultMargins.bottomIn = m_margins.bottomIn;
-        defaultMargins.leftIn   = m_margins.leftIn;
-        defaultMargins.rightIn  = m_margins.rightIn;
-    }
-    m_printMarginText[0]   = FormatMarginText(defaultMargins.topIn);
-    m_printMarginText[1]   = FormatMarginText(defaultMargins.bottomIn);
-    m_printMarginText[2]   = FormatMarginText(defaultMargins.leftIn);
-    m_printMarginText[3]   = FormatMarginText(defaultMargins.rightIn);
+    m_printMarginText[0]   = FormatMarginText(m_printRequest.margins.topIn);
+    m_printMarginText[1]   = FormatMarginText(m_printRequest.margins.bottomIn);
+    m_printMarginText[2]   = FormatMarginText(m_printRequest.margins.leftIn);
+    m_printMarginText[3]   = FormatMarginText(m_printRequest.margins.rightIn);
     m_printFocus           = PrintField::Printer;
 
     m_promptMode    = PromptMode::PrintDialog;
@@ -2336,30 +2247,8 @@ void Application::ClosePrintDialog(bool commit)
     m_printRequest.printerName  = m_printerList[m_printPrinterIdx];
     m_printRequest.documentName = m_document->DisplayName();
 
-    // WYSIWYG: print uses the editor's current font/size so the output
-    // matches what's on screen. Bundled TTFs are registered privately by
-    // PrintDocument via AddFontResourceEx so users don't need the font
-    // installed system-wide.
-    if (m_wysiwygEnabled)
-    {
-        m_printRequest.useDocumentFont = true;
-        m_printRequest.fontFamily      = FontFaceFamily(m_fontSettings.face);
-        m_printRequest.fontFile        = ResolveAssetPath(FontFaceFile(m_fontSettings.face));
-        m_printRequest.pointSize       = FontSizePoints(m_fontSettings.size);
-        m_printRequest.bold            = FontFaceIsBold(m_fontSettings.face);
-        // Pass the same chars-per-line value WYSIWYG used on screen so the
-        // print wraps at identical column positions.
-        m_printRequest.overrideCharsPerLine = WysiwygRenderer::ComputeCharsPerLine(
-            m_fontSettings.face,
-            FontSizePoints(m_fontSettings.size),
-            m_printRequest.margins.leftIn,
-            m_printRequest.margins.rightIn);
-    }
-    else
-    {
-        m_printRequest.useDocumentFont      = false;
-        m_printRequest.overrideCharsPerLine = 0;
-    }
+    m_printRequest.useDocumentFont      = false;
+    m_printRequest.overrideCharsPerLine = 0;
 
     m_promptMode    = PromptMode::None;
     m_statusMessage = "Printing...";
@@ -2461,97 +2350,6 @@ void Application::PrintBackspace()
 }
 
 // ---------------------------------------------------------------------------
-// WYSIWYG mode + Margins dialog
-// ---------------------------------------------------------------------------
-
-void Application::ToggleWysiwyg()
-{
-    m_wysiwygEnabled = !m_wysiwygEnabled;
-    if (m_wysiwygEnabled)
-        m_wysiwygScrollPx = 0;
-    m_statusMessage = m_wysiwygEnabled ? "WYSIWYG on" : "WYSIWYG off";
-    WriteSidecarForCurrentDocument();
-}
-
-void Application::OpenMarginsDialog()
-{
-    char buf[16];
-    auto fmt = [&](double v) {
-        std::snprintf(buf, sizeof(buf), "%.2f", v);
-        return std::string(buf);
-    };
-    m_marginEditText[0] = fmt(m_margins.topIn);
-    m_marginEditText[1] = fmt(m_margins.bottomIn);
-    m_marginEditText[2] = fmt(m_margins.leftIn);
-    m_marginEditText[3] = fmt(m_margins.rightIn);
-    m_marginFocusIdx    = 0;
-    m_promptMode        = PromptMode::MarginsDialog;
-    m_statusMessage.clear();
-}
-
-void Application::CloseMarginsDialog(bool commit)
-{
-    if (!commit)
-    {
-        m_promptMode    = PromptMode::None;
-        m_statusMessage = "Ready";
-        return;
-    }
-    auto parse = [&](const std::string& s, double def) {
-        if (s.empty()) return def;
-        try { return std::stod(s); } catch (...) { return def; }
-    };
-    auto clamp = [](double v) { return std::clamp(v, 0.0, 5.0); };
-
-    m_margins.topIn    = clamp(parse(m_marginEditText[0], m_margins.topIn));
-    m_margins.bottomIn = clamp(parse(m_marginEditText[1], m_margins.bottomIn));
-    m_margins.leftIn   = clamp(parse(m_marginEditText[2], m_margins.leftIn));
-    m_margins.rightIn  = clamp(parse(m_marginEditText[3], m_margins.rightIn));
-
-    m_promptMode    = PromptMode::None;
-    m_statusMessage = "Margins updated";
-    WriteSidecarForCurrentDocument();
-}
-
-void Application::MarginCycleField(int dir)
-{
-    m_marginFocusIdx = ((m_marginFocusIdx + dir) % 4 + 4) % 4;
-}
-
-void Application::MarginAdjustField(int dir)
-{
-    if (m_marginFocusIdx < 0 || m_marginFocusIdx > 3) return;
-    auto parse = [&](const std::string& s) -> double {
-        if (s.empty()) return 0.5;
-        try { return std::stod(s); } catch (...) { return 0.5; }
-    };
-    double v = parse(m_marginEditText[m_marginFocusIdx]) + 0.05 * dir;
-    v = std::clamp(v, 0.0, 5.0);
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%.2f", v);
-    m_marginEditText[m_marginFocusIdx] = buf;
-}
-
-void Application::MarginTextEdit(char ch)
-{
-    if (m_marginFocusIdx < 0 || m_marginFocusIdx > 3) return;
-    bool isDigit = (ch >= '0' && ch <= '9');
-    bool isDot   = (ch == '.');
-    if (!isDigit && !isDot) return;
-    std::string& s = m_marginEditText[m_marginFocusIdx];
-    if (isDot && s.find('.') != std::string::npos) return;
-    if (s.size() >= 5) return;
-    s.push_back(ch);
-}
-
-void Application::MarginBackspace()
-{
-    if (m_marginFocusIdx < 0 || m_marginFocusIdx > 3) return;
-    std::string& s = m_marginEditText[m_marginFocusIdx];
-    if (!s.empty()) s.pop_back();
-}
-
-// ---------------------------------------------------------------------------
 // Per-file settings sidecar
 //
 // To add a new persisted setting:
@@ -2564,11 +2362,6 @@ void Application::CaptureFileSettings(FileSettings& s) const
 {
     s.SetBool("word_wrap",       m_wordWrap);
     s.SetBool("show_word_count", m_showWordCount);
-    s.SetBool  ("wysiwyg",       m_wysiwygEnabled);
-    s.SetString("margin_top",    std::to_string(m_margins.topIn));
-    s.SetString("margin_bottom", std::to_string(m_margins.bottomIn));
-    s.SetString("margin_left",   std::to_string(m_margins.leftIn));
-    s.SetString("margin_right",  std::to_string(m_margins.rightIn));
 }
 
 void Application::ApplyFileSettings(const FileSettings& s)
@@ -2577,23 +2370,16 @@ void Application::ApplyFileSettings(const FileSettings& s)
         SetWordWrap(s.GetBool("word_wrap"));
     if (s.Has("show_word_count"))
         m_showWordCount = s.GetBool("show_word_count");
-    if (s.Has("wysiwyg"))
-        m_wysiwygEnabled = s.GetBool("wysiwyg");
-    auto readDouble = [&](const char* key, double& out) {
-        if (!s.Has(key)) return;
-        try { out = std::stod(s.GetString(key)); } catch (...) {}
-    };
-    readDouble("margin_top",    m_margins.topIn);
-    readDouble("margin_bottom", m_margins.bottomIn);
-    readDouble("margin_left",   m_margins.leftIn);
-    readDouble("margin_right",  m_margins.rightIn);
 }
 
 void Application::WriteSidecarForCurrentDocument()
 {
     std::string sidecar = FileSettings::SidecarPath(m_document->Filename());
     if (sidecar.empty()) return;
+    // Load first so unknown keys (e.g. WYSIWYG/margin keys written by
+    // RetroDocWriter) round-trip untouched when RetroEdit saves the sidecar.
     FileSettings s;
+    s.Load(sidecar);
     CaptureFileSettings(s);
     s.Save(sidecar);  // silent on failure - sidecar is best-effort
 }
@@ -2636,8 +2422,6 @@ void Application::ApplyFontSettings(const FontSettings& settings)
 {
     m_fontSettings = settings;
     m_renderer->SetFontSettings(settings);
-    // WysiwygRenderer rebuilds its glyph cache lazily inside Draw() when the
-    // (face, point size, dpi) tuple changes — no explicit notification needed.
 
     // Window stays at WINDOW_WIDTH x WINDOW_HEIGHT — cell size changes, so
     // the column/row count of the screen buffer is what shifts.
@@ -2823,11 +2607,6 @@ void Application::Render()
     uiState.printOrientation    = (m_printRequest.orientation == PrintOrientation::Landscape) ? 1 : 0;
     uiState.printFocusField     = static_cast<int>(m_printFocus);
 
-    // WYSIWYG mode + Margins dialog snapshot
-    uiState.wysiwygEnabled      = m_wysiwygEnabled;
-    uiState.marginsDialogActive = (m_promptMode == PromptMode::MarginsDialog);
-    for (int i = 0; i < 4; ++i) uiState.marginEditText[i] = m_marginEditText[i];
-    uiState.marginFocusIdx      = m_marginFocusIdx;
     if (m_highlightMisspelled)
     {
         // Tokenize each visible buffer line and record misspelled spans.
@@ -2869,9 +2648,7 @@ void Application::Render()
 
     m_ui->Draw(*m_screenBuffer, m_cursor, uiState);
 
-    // Cell-grid block cursor (hidden in WYSIWYG mode — WysiwygRenderer draws
-    // its own proportional cursor instead).
-    if (m_cursor.visible && m_promptMode == PromptMode::None && !m_wysiwygEnabled)
+    if (m_cursor.visible && m_promptMode == PromptMode::None)
     {
         int screenRow;
         int screenCol;
@@ -2900,51 +2677,7 @@ void Application::Render()
         }
     }
 
-    if (m_wysiwygEnabled && m_promptMode == PromptMode::None)
-    {
-        m_renderer->PaintBuffer(*m_screenBuffer);
-
-        int cw = m_renderer->CellWidth();
-        int ch = m_renderer->CellHeight();
-        // The cell-mode editor opens TTF fonts treating "point size" as
-        // pixel height, which is equivalent to assuming 72 DPI. Using the
-        // same effective DPI for the WYSIWYG preview keeps the font the
-        // same visual size as the editor — only the page rectangle and
-        // margins appear (at the matching scale). The wrap math itself
-        // uses ComputeCharsPerLine which is DPI-independent, so the wrap
-        // still matches what the printer produces at the printer's true
-        // DPI.
-        const int dpi = 72;
-
-        WysiwygRenderer::DrawContext ctx{};
-        ctx.buffer         = &m_document->Buffer();
-        ctx.cursorRow      = m_cursor.row;
-        ctx.cursorCol      = m_cursor.column;
-        ctx.cursorVisible  = m_cursor.visible;
-        ctx.selActive      = m_selection.active;
-        ctx.selAnchorRow   = m_selection.anchorRow;
-        ctx.selAnchorCol   = m_selection.anchorCol;
-        ctx.margins        = m_margins;
-        ctx.editorAreaPxX  = 0;
-        ctx.editorAreaPxY  = m_layout.ROW_EDITOR_FIRST * ch;
-        ctx.editorAreaPxW  = m_screenColumns * cw;
-        ctx.editorAreaPxH  = (m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1) * ch;
-        ctx.screenDpi      = dpi;
-        ctx.viewportTopPx  = m_wysiwygScrollPx;
-        ctx.face           = m_fontSettings.face;
-        ctx.pointSize      = FontSizePoints(m_fontSettings.size);
-
-        // Auto-scroll the page so the cursor stays visible.
-        m_wysiwygScrollPx  = m_wysiwyg->ClampScrollForCursor(ctx);
-        ctx.viewportTopPx  = m_wysiwygScrollPx;
-
-        m_wysiwyg->Draw(ctx);
-        m_renderer->Present();
-    }
-    else
-    {
-        m_renderer->Render(*m_screenBuffer);
-    }
+    m_renderer->Render(*m_screenBuffer);
 }
 
 void Application::UpdateCursorBlink()

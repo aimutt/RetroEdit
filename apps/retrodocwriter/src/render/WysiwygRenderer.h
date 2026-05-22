@@ -1,6 +1,6 @@
 #pragma once
-#include "FontFace.h"
-#include "Theme.h"
+#include "render/FontFace.h"
+#include "render/Theme.h"
 #include <SDL3/SDL.h>
 #include <memory>
 

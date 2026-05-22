@@ -1,11 +1,10 @@
 #pragma once
-#include "Cursor.h"
+#include "app/Cursor.h"
 #include "platform/Window.h"
 #include "render/FontSettings.h"
 #include "render/ScreenBuffer.h"
 #include "render/RetroRenderer.h"
 #include "render/Theme.h"
-#include "render/WysiwygRenderer.h"
 #include "ui/Layout.h"
 #include "ui/MenuDefs.h"
 #include "ui/RetroUi.h"
@@ -41,7 +40,6 @@ enum class PromptMode
     RemoveWordDialog,// text input -> Dictionary::RemoveWord
     CheckWordDialog,// text input -> Dictionary::Contains, result in status bar
     PrintDialog,    // full print dialog (printer, copies, range, orientation, margins)
-    MarginsDialog,  // WYSIWYG page margins (per-document)
 };
 
 // Fields in the Print dialog, ordered for Tab cycling.
@@ -99,8 +97,8 @@ private:
     void MoveCursorLeft();
     void MoveCursorRight();
     // Effective wrap width (characters) for visual cursor navigation:
-    // WYSIWYG -> WYSIWYG chars-per-line, word-wrap -> screen columns,
-    // otherwise 0 (treat as no wrap — Up/Down skip whole buffer rows).
+    // word-wrap on -> screen columns, otherwise 0 (treat as no wrap — Up/Down
+    // skip whole buffer rows).
     int  NavigationWrapWidth() const;
 
     // Editing
@@ -177,15 +175,6 @@ private:
     void PrintTextEdit(char ch);                    // digit or '.'
     void PrintBackspace();
 
-    // WYSIWYG mode and Margins dialog
-    void ToggleWysiwyg();
-    void OpenMarginsDialog();
-    void CloseMarginsDialog(bool commit);
-    void MarginCycleField(int dir);
-    void MarginAdjustField(int dir);
-    void MarginTextEdit(char ch);
-    void MarginBackspace();
-
     // Global app settings (persisted under %LOCALAPPDATA%\RetroEdit\)
     void LoadGlobalSettings();
     void SaveGlobalSettings();
@@ -254,15 +243,6 @@ private:
     std::string              m_printFromText;
     std::string              m_printToText;
     std::string              m_printMarginText[4]; // top, bottom, left, right
-
-    // WYSIWYG mode (per-document, persisted via sidecar)
-    bool             m_wysiwygEnabled  = false;
-    WysiwygMargins   m_margins;
-    int              m_wysiwygScrollPx = 0;
-    std::unique_ptr<WysiwygRenderer> m_wysiwyg;
-    // Margins dialog edit-in-progress strings (top, bottom, left, right)
-    std::string      m_marginEditText[4];
-    int              m_marginFocusIdx  = 0;
 
     Layout                          m_layout;
     Theme                           m_theme;
