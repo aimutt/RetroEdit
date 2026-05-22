@@ -1,5 +1,5 @@
 #include "WysiwygRenderer.h"
-#include "GlyphCache.h"
+#include "render/GlyphCache.h"
 #include "editor/TextBuffer.h"
 #include "platform/AssetPath.h"
 

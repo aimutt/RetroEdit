@@ -18,9 +18,7 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
 {
     DrawMenuBar(buffer, state.menuBarActive, state.activeMenu);
     DrawTitleBar(buffer, state.filename, state.dirty);
-    // In WYSIWYG mode, leave the editor cells empty so the proportional
-    // overlay (drawn after RetroRenderer's cell pass) shows through.
-    if (state.textBuffer && !state.wysiwygEnabled)
+    if (state.textBuffer)
         DrawEditorArea(buffer, *state.textBuffer, state.viewportTop, cursor, state);
     DrawStatusBar(buffer, cursor, state);
     DrawSeparator(buffer, m_layout.ROW_SEP_BOT);
@@ -44,9 +42,6 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
 
     if (state.printDialogActive)
         DrawPrintDialog(buffer, state);
-
-    if (state.marginsDialogActive)
-        DrawMarginsDialog(buffer, state);
 
     if (state.dialogActive)
     {
@@ -314,14 +309,13 @@ namespace
     // when "Off" is wider than the (empty) static shortcut.
     std::string LiveShortcut(int menuIdx, int itemIdx, const MenuItemDef& item,
                              bool wordWrap, bool showWordCount,
-                             bool spellCheckEnabled, bool highlightMisspelled,
-                             bool wysiwygEnabled)
+                             bool spellCheckEnabled, bool highlightMisspelled)
     {
-        if (menuIdx == 4 && itemIdx == 0) return wysiwygEnabled      ? "On" : "Off";
-        if (menuIdx == 6 && itemIdx == 1) return wordWrap            ? "On" : "Off";
-        if (menuIdx == 6 && itemIdx == 2) return showWordCount       ? "On" : "Off";
-        if (menuIdx == 6 && itemIdx == 3) return spellCheckEnabled   ? "On" : "Off";
-        if (menuIdx == 6 && itemIdx == 4) return highlightMisspelled ? "On" : "Off";
+        // Options menu (idx 5) has the live On/Off toggles.
+        if (menuIdx == 5 && itemIdx == 1) return wordWrap            ? "On" : "Off";
+        if (menuIdx == 5 && itemIdx == 2) return showWordCount       ? "On" : "Off";
+        if (menuIdx == 5 && itemIdx == 3) return spellCheckEnabled   ? "On" : "Off";
+        if (menuIdx == 5 && itemIdx == 4) return highlightMisspelled ? "On" : "Off";
         return item.shortcut;
     }
 
@@ -332,7 +326,6 @@ namespace
     DropdownRect ComputeDropdownRect(int menuIdx, int screenColumns,
                                      bool wordWrap, bool showWordCount,
                                      bool spellCheckEnabled, bool highlightMisspelled,
-                                     bool wysiwygEnabled,
                                      const Layout& layout)
     {
         DropdownRect r{ 0, layout.ROW_SEP_TOP, 0, 0 };
@@ -348,8 +341,7 @@ namespace
             int w = static_cast<int>(item.label.size());
             std::string sc = LiveShortcut(menuIdx, i, item,
                                           wordWrap, showWordCount,
-                                          spellCheckEnabled, highlightMisspelled,
-                                          wysiwygEnabled);
+                                          spellCheckEnabled, highlightMisspelled);
             if (!sc.empty())
                 w += static_cast<int>(sc.size()) + 2; // two-space gap
             innerWidth = std::max(innerWidth, w);
@@ -380,7 +372,6 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
         menuIdx, buffer.Columns(),
         state.wordWrap, state.showWordCount,
         state.spellCheckEnabled, state.highlightMisspelled,
-        state.wysiwygEnabled,
         m_layout);
 
     int startCol  = rect.startCol;
@@ -436,8 +427,7 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
             std::string shortcut = LiveShortcut(menuIdx, i, item,
                                                 state.wordWrap, state.showWordCount,
                                                 state.spellCheckEnabled,
-                                                state.highlightMisspelled,
-                                                state.wysiwygEnabled);
+                                                state.highlightMisspelled);
             if (!shortcut.empty())
             {
                 Color scFg = isHighlighted ? m_theme.reverseForeground : m_theme.dimText;
@@ -477,14 +467,12 @@ int RetroUi::HitTestMenuBar(int cellCol) const
 int RetroUi::HitTestDropdownItem(int menuIdx, int cellCol, int cellRow,
                                  int screenColumns,
                                  bool wordWrap, bool showWordCount,
-                                 bool spellCheckEnabled, bool highlightMisspelled,
-                                 bool wysiwygEnabled) const
+                                 bool spellCheckEnabled, bool highlightMisspelled) const
 {
     DropdownRect rect = ComputeDropdownRect(
         menuIdx, screenColumns,
         wordWrap, showWordCount,
         spellCheckEnabled, highlightMisspelled,
-        wysiwygEnabled,
         m_layout);
     if (rect.outerWidth <= 0 || rect.numItems <= 0) return -1;
 
@@ -972,107 +960,6 @@ RetroUi::PrintHit RetroUi::HitTestPrintDialog(int cellCol, int cellRow, int scre
     }
 
     return PrintHit::None;
-}
-
-// ---------------------------------------------------------------------------
-// Margins dialog (Format > Margins...)
-// ---------------------------------------------------------------------------
-//
-// Compact 50 x 9 modal with four bracketed margin fields:
-//
-//   row 2  "Top:  [0.50]   Bottom: [0.50]"
-//   row 3  "Left: [0.75]   Right:  [0.75]"
-//   row 5  hint "[Tab] Next  [Enter] OK  [Esc] Cancel"
-
-namespace
-{
-    constexpr int kMarginsW = 50;
-    constexpr int kMarginsH = 9;
-    const char* const kMarginsHint = "[Tab] Next  [Enter] OK  [Esc] Cancel";
-}
-
-RetroUi::Rect RetroUi::MarginsDialogRect(int screenColumns) const
-{
-    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, kMarginsW, kMarginsH);
-}
-
-void RetroUi::DrawMarginsDialog(ScreenBuffer& buffer, const EditorUiState& state)
-{
-    Rect r = MarginsDialogRect(buffer.Columns());
-    const int x = r.x;
-    const int y = r.y;
-
-    Color fg     = m_theme.normalText;
-    Color bg     = m_theme.background;
-    Color bright = m_theme.brightText;
-    Color dim    = m_theme.dimText;
-
-    DrawBox(buffer, x, y, r.w, r.h, fg, bg);
-
-    // Title
-    std::string title = " Margins (in) ";
-    int titleX = x + (r.w - static_cast<int>(title.size())) / 2;
-    buffer.WriteText(titleX, y, title, bright, bg);
-
-    auto drawBracketField = [&](int row, int col, int width,
-                                 const std::string& text, bool focused) {
-        Color tfg = focused ? m_theme.reverseForeground : bright;
-        Color tbg = focused ? m_theme.reverseBackground : bg;
-        buffer.PutChar(x + col,             y + row, U'[', dim, bg);
-        buffer.PutChar(x + col + width - 1, y + row, U']', dim, bg);
-        for (int c = 1; c < width - 1; ++c)
-            buffer.PutChar(x + col + c, y + row, U' ', tfg, tbg);
-        int inner    = width - 2;
-        int textCols = std::min(static_cast<int>(text.size()), inner);
-        int startC   = col + 1 + (inner - textCols);
-        for (int i = 0; i < textCols; ++i)
-            buffer.PutChar(x + startC + i, y + row,
-                           static_cast<char32_t>(static_cast<unsigned char>(text[i])),
-                           tfg, tbg);
-    };
-
-    // Row 2: Top + Bottom
-    buffer.WriteText(x + 2, y + 2, "Top:",    fg, bg);
-    drawBracketField(2, 8, 6, state.marginEditText[0], state.marginFocusIdx == 0);
-    buffer.WriteText(x + 18, y + 2, "Bottom:", fg, bg);
-    drawBracketField(2, 26, 6, state.marginEditText[1], state.marginFocusIdx == 1);
-
-    // Row 3: Left + Right
-    buffer.WriteText(x + 2, y + 3, "Left:",  fg, bg);
-    drawBracketField(3, 8, 6, state.marginEditText[2], state.marginFocusIdx == 2);
-    buffer.WriteText(x + 18, y + 3, "Right:", fg, bg);
-    drawBracketField(3, 26, 6, state.marginEditText[3], state.marginFocusIdx == 3);
-
-    // Hint
-    buffer.WriteText(x + 2, y + r.h - 2, kMarginsHint, dim, bg);
-}
-
-RetroUi::MarginsHit RetroUi::HitTestMarginsDialog(int cellCol, int cellRow, int screenColumns) const
-{
-    Rect r = MarginsDialogRect(screenColumns);
-    if (!r.Contains(cellCol, cellRow)) return MarginsHit::None;
-
-    const int rx = cellCol - r.x;
-    const int ry = cellRow - r.y;
-    auto in = [&](int col, int width) { return rx >= col && rx < col + width; };
-
-    if (ry == 2)
-    {
-        if (in(8,  6)) return MarginsHit::Top;
-        if (in(26, 6)) return MarginsHit::Bottom;
-    }
-    if (ry == 3)
-    {
-        if (in(8,  6)) return MarginsHit::Left;
-        if (in(26, 6)) return MarginsHit::Right;
-    }
-    if (ry == r.h - 2)
-    {
-        std::string tok = TokenAt(kMarginsHint, r.x + 2, cellCol);
-        if (tok == "ENTER") return MarginsHit::OkHint;
-        if (tok == "ESC")   return MarginsHit::CancelHint;
-    }
-    return MarginsHit::None;
 }
 
 // ---------------------------------------------------------------------------

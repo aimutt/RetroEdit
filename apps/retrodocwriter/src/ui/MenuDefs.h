@@ -57,7 +57,6 @@ inline const std::vector<MenuDef>& GetMenuDefs()
             { "(coming soon)", "" },
         }},
         { "Page", 27, {
-            { "WYSIWYG",     ""  },   // shortcut column shows On/Off at draw time
             { "Margins...",  ""  },
         }},
         { "Tools", 33, {
