@@ -1,4 +1,5 @@
 #pragma once
+#include "editor/CharStyle.h"
 #include <string>
 #include <vector>
 
@@ -39,7 +40,17 @@ struct PrintRequest
     // measuring its own character width. Set by Application when WYSIWYG
     // is on so the print wrap matches the on-screen wrap exactly (both
     // are derived from the same DPI-independent ComputeCharsPerLine call).
+    // Ignored when `formats` is non-null (the formatted path uses
+    // pixel-based wrap with per-char advance).
     int               overrideCharsPerLine = 0;
+
+    // Optional per-character formatting parallel to `buffer`. When non-
+    // null, the print path switches GDI fonts per-run to honor style /
+    // face / size from each CharFormat. Inherit-sentinel face/size falls
+    // back to `fontFamily` / `pointSize` (the document defaults set
+    // above). When null, every character prints with the single document
+    // font (Phase 2 behavior).
+    const std::vector<std::vector<CharFormat>>* formats = nullptr;
 };
 
 // Returns the installed printers. First entry is the system default (or the

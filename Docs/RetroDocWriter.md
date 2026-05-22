@@ -9,7 +9,7 @@ RetroEdit is a plain-text editor — one buffer of `std::string` lines, no per-c
 - **RetroEdit** — pure plain-text editor. Always character-cell rendering. No pages, no margins, no formatting.
 - **RetroDocWriter** — always-on WYSIWYG document writer. Proportional layout on a US Letter page, per-character bold/italic/underline/strikethrough, native RTF I/O.
 
-## Current state (Phase 1 + Phase 2 shipped)
+## Current state (Phase 1 + Phase 2 + Phase 3 shipped)
 
 **Phase 1 — layout-only WYSIWYG:**
 
@@ -30,15 +30,24 @@ RetroEdit is a plain-text editor — one buffer of `std::string` lines, no per-c
 - Plain `.txt` files still open and edit normally. If formatting is added and the user hits Ctrl+S, a `Save Formatted Document` confirm dialog asks whether to Save As .rtf (preserves formatting) or save plain .txt (flatten and discard).
 - Undo/redo restores both text and styles together (separate `RichUndoHistory` keyed off `FormattedTextBuffer` snapshots)
 
-**Explicitly not in Phase 2:**
+**Phase 3 — per-run font face/size + style-aware print:**
 
-- Per-run font face / point size (defer to Phase 3 — the data model is ready, the renderer is not)
-- Color / highlighting
+- The data model graduated from style-only bytes to a full `CharFormat` struct (style + face + size) per character; the parallel format vector still mirrors `TextBuffer` byte-for-byte.
+- **Font dialog** (Options > Font…): when a selection is active, applying a face/size pins those characters to the new override; otherwise the choice changes the document default (the existing behavior). Opening the dialog with a selection seeds the face/size from the first character of the selection.
+- **WysiwygRenderer** holds a small `(face, pointSize)` → `GlyphCache` map so multiple sizes / faces coexist in the same document. Wrap is now **pixel-based** rather than column-based: a heading at 24pt won't overflow the right margin just because the default font is 16pt. Each visual line's height is `max(LineHeight)` over the fonts actually used on it; pagination is greedy packing of variable-height lines.
+- **RTF round-trip preserves face + size runs.** The writer builds `\fonttbl` from every distinct face used in the document and emits `\fN` / `\fsN` differentially in the body. The reader parses multi-entry `\fonttbl`, maps each entry to a `FontFace` via `FontFaceFromFamilyName`, and applies per-run `\fN` / `\fsN` while walking the body. Inherit-sentinel chars (the doc default) are folded back when the body's `\fN` / `\fsN` value matches the header's `\deff` / `\fs`, so files that don't mix fonts round-trip without spurious explicit overrides.
+- **Style-aware print path.** `Print.cpp` gained a formatted code path triggered when `PrintRequest::formats` is set. It iterates per-character with a `(face, pointSize, styleBits)` → `HFONT` cache, registers every used TTF privately via `AddFontResourceEx`, and switches GDI fonts per run inside each visual line. Wrap and pagination mirror the screen renderer (pixel-based, variable line height) so printed output matches what's on screen.
+
+**Cursor navigation caveat:** `Application::NavigationWrapWidth` still computes Up/Down arrow step from the document's default font's chars-per-line. Heading lines (mixed sizes) may step at a column that doesn't match the visual wrap — keyboard navigation will look off by a few columns inside heading runs. Defer to a future phase if it bites.
+
+**Explicitly not yet shipped (Phase 4+):**
+
+- Color / highlighting per character
 - Page breaks (text still flows as one tall page)
 - Rulers, margin guides, headers/footers
 - Print preview pane
 - Selectable page size (US Letter is hardcoded)
-- **Print path is style-blind for now** — Print menu still uses the document font uniformly. Formatted documents print without bold/italic/etc. Phase 3 work.
+- Pixel-accurate cursor-arrow navigation in mixed-size paragraphs (see caveat above)
 
 ## Architecture (where things live)
 
@@ -78,9 +87,9 @@ RetroDocWriter writes (and is guaranteed to round-trip) the following RTF contro
 | `\ansi`      | Default character set                                  |
 | `\ansicpg1252` | Default code page                                    |
 | `\fonttbl`   | Font table group (single entry, the document font)     |
-| `\f0`        | Selects font 0                                         |
-| `\deff0`     | Default font index                                     |
-| `\fs<N>`     | Font size in half-points (`\fs24` = 12 pt)             |
+| `\fN`        | Selects font N from the table (header or per-run)      |
+| `\deffN`     | Default font index                                     |
+| `\fs<N>`     | Font size in half-points (`\fs24` = 12 pt; header or per-run) |
 | `\b` / `\b0` | Bold on / off                                          |
 | `\i` / `\i0` | Italic on / off                                        |
 | `\ul` / `\ulnone` | Underline on / off (also accepts `\ul0`)          |

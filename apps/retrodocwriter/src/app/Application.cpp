@@ -437,7 +437,9 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
                 EraseSelection();
             int endRow = 0, endCol = 0;
             m_document->Buffer().InsertText(m_cursor.column, m_cursor.row,
-                                            "    ", m_currentStyle, endRow, endCol);
+                                            "    ",
+                                            CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit},
+                                            endRow, endCol);
             m_cursor.row    = endRow;
             m_cursor.column = endCol;
             m_document->MarkDirty();
@@ -1288,7 +1290,8 @@ void Application::HandleTextInput(const char* text)
                 m_lastActionWasInsert = true;
             }
             EnsureUndoBeforeInsert();
-            m_document->Buffer().InsertChar(m_cursor.column, m_cursor.row, *p, m_currentStyle);
+            m_document->Buffer().InsertChar(m_cursor.column, m_cursor.row, *p,
+                                            CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit});
             ++m_cursor.column;
             m_document->MarkDirty();
             UpdateWindowTitle();
@@ -1473,7 +1476,7 @@ void Application::EnsureUndoBeforeInsert()
 
 void Application::ApplyUndoState(const RichUndoState& s)
 {
-    m_document->Buffer().SetLines(s.lines, s.styles);
+    m_document->Buffer().SetLines(s.lines, s.formats);
     m_cursor.row    = s.cursorRow;
     m_cursor.column = s.cursorCol;
     m_selection.Clear();
@@ -1578,7 +1581,9 @@ void Application::PasteClipboard()
         EraseSelection();
 
     int endRow = 0, endCol = 0;
-    m_document->Buffer().InsertText(m_cursor.column, m_cursor.row, text, m_currentStyle, endRow, endCol);
+    m_document->Buffer().InsertText(m_cursor.column, m_cursor.row, text,
+                                    CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit},
+                                    endRow, endCol);
     m_cursor.row    = endRow;
     m_cursor.column = endCol;
     m_selection.Clear();
@@ -2043,18 +2048,52 @@ void Application::ScrollViewport()
 void Application::OpenFontDialog()
 {
     m_promptMode            = PromptMode::FontDialog;
-    m_fontDialogFaceIdx     = static_cast<int>(m_fontSettings.face);
-    m_fontDialogSizeIdx     = IndexOfFontSize(m_fontSettings.size);
+    // Seed the dialog from the selection's first char when a selection is
+    // active (so reopening the dialog after applying a per-run override
+    // reflects what's actually under the cursor). Inherit-sentinel falls
+    // back to the document default.
+    FontFace seedFace = m_fontSettings.face;
+    FontSize seedSize = m_fontSettings.size;
+    if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
+    {
+        int sr, sc, er, ec;
+        m_selection.GetRange(m_cursor.row, m_cursor.column, sr, sc, er, ec);
+        CharFormat f = m_document->Buffer().FormatAt(sr, sc);
+        if (f.face != CharFormat::Inherit && f.face < static_cast<uint8_t>(FontFace::Count_))
+            seedFace = static_cast<FontFace>(f.face);
+        if (f.size != CharFormat::Inherit && f.size < 4)
+            seedSize = FontSizeAt(static_cast<int>(f.size));
+    }
+    m_fontDialogFaceIdx     = static_cast<int>(seedFace);
+    m_fontDialogSizeIdx     = IndexOfFontSize(seedSize);
     m_fontDialogFocusColumn = 0;
 }
 
 void Application::ApplyFontDialogSelection()
 {
-    FontSettings choice{
-        static_cast<FontFace>(m_fontDialogFaceIdx),
-        FontSizeAt(m_fontDialogSizeIdx)
-    };
+    FontFace face = static_cast<FontFace>(m_fontDialogFaceIdx);
+    FontSize size = FontSizeAt(m_fontDialogSizeIdx);
     m_promptMode = PromptMode::None;
+
+    // With a selection active, pin face+size to the selected range only
+    // (per-character overrides). Without a selection, the choice changes
+    // the document default — the existing behavior — and applies globally.
+    if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
+    {
+        int sr, sc, er, ec;
+        m_selection.GetRange(m_cursor.row, m_cursor.column, sr, sc, er, ec);
+        PushUndoBeforeEdit();
+        m_document->Buffer().SetFaceInRange(sr, sc, er, ec,
+            static_cast<uint8_t>(face));
+        m_document->Buffer().SetSizeInRange(sr, sc, er, ec,
+            static_cast<uint8_t>(IndexOfFontSize(size)));
+        m_document->MarkDirty();
+        UpdateWindowTitle();
+        m_statusMessage = "Font applied to selection";
+        return;
+    }
+
+    FontSettings choice{ face, size };
     if (!(choice == m_fontSettings))
     {
         ApplyFontSettings(choice);
@@ -2446,18 +2485,18 @@ void Application::ClosePrintDialog(bool commit)
         m_printRequest.fontFile        = ResolveAssetPath(FontFaceFile(m_fontSettings.face));
         m_printRequest.pointSize       = FontSizePoints(m_fontSettings.size);
         m_printRequest.bold            = FontFaceIsBold(m_fontSettings.face);
-        // Pass the same chars-per-line value WYSIWYG used on screen so the
-        // print wraps at identical column positions.
-        m_printRequest.overrideCharsPerLine = WysiwygRenderer::ComputeCharsPerLine(
-            m_fontSettings.face,
-            FontSizePoints(m_fontSettings.size),
-            m_printRequest.margins.leftIn,
-            m_printRequest.margins.rightIn);
+        // The formatted print path uses pixel-based wrap with per-char
+        // advance — exactly mirrors the screen renderer — so the
+        // chars-per-line override is no longer needed when formats are
+        // passed.
+        m_printRequest.overrideCharsPerLine = 0;
+        m_printRequest.formats              = &m_document->Buffer().Formats();
     }
     else
     {
         m_printRequest.useDocumentFont      = false;
         m_printRequest.overrideCharsPerLine = 0;
+        m_printRequest.formats              = nullptr;
     }
 
     m_promptMode    = PromptMode::None;

@@ -8,16 +8,16 @@ RichUndoState RichUndoHistory::Snapshot(const FormattedTextBuffer& buf,
     s.cursorCol = col;
     int n = buf.LineCount();
     s.lines.reserve(static_cast<size_t>(n));
-    s.styles.reserve(static_cast<size_t>(n));
+    s.formats.reserve(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i)
     {
         s.lines.push_back(buf.Line(i));
-        std::vector<uint8_t> row_styles;
+        std::vector<CharFormat> row_fmt;
         int len = buf.LineLength(i);
-        row_styles.reserve(static_cast<size_t>(len));
+        row_fmt.reserve(static_cast<size_t>(len));
         for (int c = 0; c < len; ++c)
-            row_styles.push_back(buf.StyleAt(i, c));
-        s.styles.push_back(std::move(row_styles));
+            row_fmt.push_back(buf.FormatAt(i, c));
+        s.formats.push_back(std::move(row_fmt));
     }
     return s;
 }

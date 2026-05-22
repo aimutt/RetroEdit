@@ -1,7 +1,10 @@
 #include "RtfWriter.h"
-#include "CharStyle.h"
+#include "editor/CharStyle.h"
+#include "render/FontSettings.h"
 #include <cstdio>
 #include <fstream>
+#include <unordered_map>
+#include <vector>
 
 namespace
 {
@@ -15,27 +18,14 @@ namespace
         if (ch == '\\') { out += "\\\\"; return; }
         if (ch == '{')  { out += "\\{";  return; }
         if (ch == '}')  { out += "\\}";  return; }
-        if (uc < 0x20)
-        {
-            // Control chars (other than \n which the caller maps to \par)
-            // are dropped. \t could be supported later via \tab.
-            return;
-        }
-        if (uc < 0x80)
-        {
-            out += ch;
-            return;
-        }
-        // High-bit byte: emit as \'hh (RTF "hex escape").
+        if (uc < 0x20) return; // dropped (newline handled at line boundary)
+        if (uc < 0x80) { out += ch; return; }
         char buf[8];
         std::snprintf(buf, sizeof(buf), "\\'%02x", uc);
         out += buf;
     }
 
-    // Emit the diff between the current and target styles. RTF treats the
-    // \b / \b0 control words as toggles applied to subsequent text until
-    // the next group close or another toggle. We emit just the bits that
-    // changed since the last character.
+    // Emit the diff between the current and target style bitmasks.
     void EmitStyleDiff(std::string& out, uint8_t cur, uint8_t want)
     {
         uint8_t turnedOn  = static_cast<uint8_t>(~cur & want);
@@ -48,10 +38,8 @@ namespace
         if (turnedOff & CharStyle::Underline)     out += "\\ulnone";
         if (turnedOn  & CharStyle::Strikethrough) out += "\\strike";
         if (turnedOff & CharStyle::Strikethrough) out += "\\strike0";
-
-        // A control word that ran straight into a text byte without
-        // intervening delimiter is ambiguous; insert a single space which
-        // RTF treats as the control-word terminator and not as content.
+        // Trailing space terminates the control word so it doesn't merge
+        // with the next text byte.
         uint8_t changed = static_cast<uint8_t>(turnedOn | turnedOff);
         if (changed != 0) out += ' ';
     }
@@ -66,32 +54,94 @@ std::string Write(const FormattedTextBuffer& buf,
     std::string out;
     out.reserve(1024);
 
-    // Header. \fs is "half points" — point size doubled.
+    // First pass: discover every FontFace value actually used in the
+    // document so we can build a complete \fonttbl. Index 0 is always the
+    // document default face — that's also where Inherit-sentinel chars
+    // resolve to, so we don't need to emit \fN for unformatted runs.
+    std::vector<FontFace> faceIndex;
+    std::unordered_map<int, int> faceLookup; // FontFace cast<int> -> table idx
+    auto faceIdxFor = [&](FontFace face) -> int {
+        int key = static_cast<int>(face);
+        auto it = faceLookup.find(key);
+        if (it != faceLookup.end()) return it->second;
+        int idx = static_cast<int>(faceIndex.size());
+        faceIndex.push_back(face);
+        faceLookup[key] = idx;
+        return idx;
+    };
+    faceIdxFor(documentFont); // index 0
+
+    for (int row = 0; row < buf.LineCount(); ++row)
+    {
+        int len = buf.LineLength(row);
+        for (int c = 0; c < len; ++c)
+        {
+            CharFormat f = buf.FormatAt(row, c);
+            if (f.face != CharFormat::Inherit
+                && f.face < static_cast<uint8_t>(FontFace::Count_))
+            {
+                faceIdxFor(static_cast<FontFace>(f.face));
+            }
+        }
+    }
+
+    // Header.
     out += "{\\rtf1\\ansi\\ansicpg1252\\deff0\n";
-    out += "{\\fonttbl{\\f0 ";
-    out += FontFaceFamily(documentFont);
-    out += ";}}\n";
+    out += "{\\fonttbl";
+    for (size_t i = 0; i < faceIndex.size(); ++i)
+    {
+        char hdr[32];
+        std::snprintf(hdr, sizeof(hdr), "{\\f%d ", static_cast<int>(i));
+        out += hdr;
+        out += FontFaceFamily(faceIndex[i]);
+        out += ";}";
+    }
+    out += "}\n";
     char fsbuf[32];
     std::snprintf(fsbuf, sizeof(fsbuf), "\\fs%d\n", pointSize * 2);
     out += fsbuf;
 
-    // Body.
+    // Body: emit differential \fN, \fsN, and style control words.
     uint8_t curStyle = 0;
+    int     curFaceIdx = 0;          // index into faceIndex
+    int     curHalfPt  = pointSize * 2;
     for (int row = 0; row < buf.LineCount(); ++row)
     {
         const std::string& line = buf.Line(row);
         for (size_t c = 0; c < line.size(); ++c)
         {
-            uint8_t want = buf.StyleAt(row, static_cast<int>(c));
-            if (want != curStyle)
+            CharFormat f = buf.FormatAt(row, static_cast<int>(c));
+
+            FontFace wantFace = (f.face == CharFormat::Inherit
+                                 || f.face >= static_cast<uint8_t>(FontFace::Count_))
+                              ? documentFont
+                              : static_cast<FontFace>(f.face);
+            int wantFaceIdx = faceLookup[static_cast<int>(wantFace)];
+            int wantHalfPt  = (f.size == CharFormat::Inherit || f.size >= 4)
+                              ? pointSize * 2
+                              : FontSizePoints(FontSizeAt(static_cast<int>(f.size))) * 2;
+
+            if (wantFaceIdx != curFaceIdx)
             {
-                EmitStyleDiff(out, curStyle, want);
-                curStyle = want;
+                char buf2[32];
+                std::snprintf(buf2, sizeof(buf2), "\\f%d ", wantFaceIdx);
+                out += buf2;
+                curFaceIdx = wantFaceIdx;
+            }
+            if (wantHalfPt != curHalfPt)
+            {
+                char buf2[32];
+                std::snprintf(buf2, sizeof(buf2), "\\fs%d ", wantHalfPt);
+                out += buf2;
+                curHalfPt = wantHalfPt;
+            }
+            if (f.style != curStyle)
+            {
+                EmitStyleDiff(out, curStyle, f.style);
+                curStyle = f.style;
             }
             EmitChar(out, line[c]);
         }
-        // End-of-line: emit \par except after the last line, so the file
-        // contains exactly LineCount-1 paragraph breaks.
         if (row + 1 < buf.LineCount())
             out += "\\par\n";
     }
