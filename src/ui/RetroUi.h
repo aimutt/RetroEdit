@@ -81,6 +81,12 @@ struct EditorUiState
     bool        printAllPages      = true;
     int         printOrientation   = 0;  // 0=Portrait, 1=Landscape
     int         printFocusField    = 0;  // mirror PrintField as int
+
+    // WYSIWYG mode + Margins dialog
+    bool        wysiwygEnabled      = false; // controls whether DrawEditorArea is skipped
+    bool        marginsDialogActive = false;
+    std::string marginEditText[4];          // top, bottom, left, right
+    int         marginFocusIdx      = 0;
 };
 
 class RetroUi
@@ -102,7 +108,8 @@ public:
     int HitTestDropdownItem(int menuIdx, int cellCol, int cellRow,
                             int screenColumns,
                             bool wordWrap, bool showWordCount,
-                            bool spellCheckEnabled, bool highlightMisspelled) const;
+                            bool spellCheckEnabled, bool highlightMisspelled,
+                            bool wysiwygEnabled) const;
 
     // Dialog hit-testing.
     // Each dialog has its own geometry, so each gets a dedicated hit-tester
@@ -149,6 +156,10 @@ public:
     PrintHit HitTestPrintDialog(int cellCol, int cellRow, int screenColumns) const;
     Rect     PrintDialogRect   (int screenColumns) const;
 
+    enum class MarginsHit { None, Top, Bottom, Left, Right, OkHint, CancelHint };
+    MarginsHit HitTestMarginsDialog(int cellCol, int cellRow, int screenColumns) const;
+    Rect       MarginsDialogRect   (int screenColumns) const;
+
 private:
     const Theme& m_theme;
     Layout       m_layout;
@@ -176,5 +187,6 @@ private:
     void DrawFindDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawWordCountDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawPrintDialog(ScreenBuffer& buffer, const EditorUiState& state);
+    void DrawMarginsDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawBox(ScreenBuffer& buffer, int x, int y, int w, int h, Color fg, Color bg);
 };

@@ -24,6 +24,22 @@ struct PrintRequest
     PrintOrientation  orientation = PrintOrientation::Portrait;
     PrintMargins      margins;
     std::string       documentName;            // used in the page footer
+
+    // When useDocumentFont is true, the printer uses fontFamily + pointSize
+    // instead of the built-in Courier 10pt fallback. fontFile is the bundled
+    // TTF path; the printer registers it via AddFontResourceEx before
+    // CreateFont so end-users don't need the font installed system-wide.
+    bool              useDocumentFont = false;
+    std::string       fontFamily;
+    std::string       fontFile;
+    int               pointSize       = 10;
+    bool              bold            = false;
+
+    // When > 0, the printer uses this chars-per-line value instead of
+    // measuring its own character width. Set by Application when WYSIWYG
+    // is on so the print wrap matches the on-screen wrap exactly (both
+    // are derived from the same DPI-independent ComputeCharsPerLine call).
+    int               overrideCharsPerLine = 0;
 };
 
 // Returns the installed printers. First entry is the system default (or the

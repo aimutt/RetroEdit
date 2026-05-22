@@ -47,19 +47,45 @@ namespace
 
     // Wrap a single source line into print-line segments, each of length
     // <= charsPerLine. Empty source line produces one empty segment so it
-    // still consumes a row on the page.
+    // still consumes a row on the page. Word-aware: greedily fills up to
+    // charsPerLine, then prefers to break at the most recent whitespace
+    // inside the segment, falling back to a hard cut when no whitespace fit.
+    // Mirrors WysiwygRenderer::WrapLinePx so display and print wrap at the
+    // same positions.
     std::vector<std::string> WrapLine(const std::string& src, int charsPerLine)
     {
         std::vector<std::string> out;
         if (charsPerLine <= 0) { out.push_back(src); return out; }
         if (src.empty())       { out.emplace_back();  return out; }
+
         size_t i = 0;
-        while (i < src.size())
+        const size_t n = src.size();
+        while (i < n)
         {
-            size_t take = std::min<size_t>(static_cast<size_t>(charsPerLine),
-                                           src.size() - i);
-            out.emplace_back(src, i, take);
-            i += take;
+            size_t start   = i;
+            size_t lastBrk = std::string::npos;
+            size_t taken   = 0;
+
+            while (i < n && taken < static_cast<size_t>(charsPerLine))
+            {
+                char c = src[i];
+                if (c == ' ' || c == '\t') lastBrk = i;
+                ++i;
+                ++taken;
+            }
+
+            if (i < n && lastBrk != std::string::npos && lastBrk > start)
+            {
+                // Break at the whitespace; skip the space so it doesn't lead
+                // the next print line.
+                out.emplace_back(src.substr(start, lastBrk - start));
+                i = lastBrk + 1;
+            }
+            else
+            {
+                // Hard break (no whitespace in the segment, or end of line).
+                out.emplace_back(src.substr(start, i - start));
+            }
         }
         return out;
     }
@@ -74,7 +100,7 @@ namespace
             if (line.empty())                  total += 1;
             else if (charsPerLine <= 0)        total += 1;
             else                               total += static_cast<int>(
-                (line.size() + charsPerLine - 1) / charsPerLine);
+                WrapLine(line, charsPerLine).size());
         }
         return total;
     }
@@ -186,13 +212,37 @@ std::string PrintDocument(const TextBuffer& buffer, const PrintRequest& req)
     const int marginLeftPx   = static_cast<int>(clampMargin(req.margins.leftIn)   * dpiX);
     const int marginRightPx  = static_cast<int>(clampMargin(req.margins.rightIn)  * dpiX);
 
-    // Build the 10pt Courier New font for the printer DC.
+    // Font selection. When the caller passes useDocumentFont (WYSIWYG mode),
+    // register the bundled TTF privately so CreateFont can find it by family
+    // name even if it isn't installed system-wide. Falls back to Courier 10pt
+    // for plain-text-mode prints.
+    const char* family    = "Courier New";
+    int         pointSize = 10;
+    DWORD       weight    = FW_NORMAL;
+    if (req.useDocumentFont && !req.fontFamily.empty())
+    {
+        family    = req.fontFamily.c_str();
+        pointSize = std::max(4, req.pointSize);
+        if (req.bold) weight = FW_BOLD;
+        if (!req.fontFile.empty())
+        {
+            // Register once per process per font path.
+            static std::vector<std::string> registered;
+            if (std::find(registered.begin(), registered.end(), req.fontFile)
+                == registered.end())
+            {
+                if (AddFontResourceExA(req.fontFile.c_str(), FR_PRIVATE, 0) > 0)
+                    registered.push_back(req.fontFile);
+            }
+        }
+    }
+
     HFONT hFont = CreateFontA(
-        -MulDiv(10, dpiY, 72),  // negative → cell height in points
+        -MulDiv(pointSize, dpiY, 72),  // negative → cell height in points
         0, 0, 0,
-        FW_NORMAL, FALSE, FALSE, FALSE,
+        weight, FALSE, FALSE, FALSE,
         ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, "Courier New");
+        DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, family);
     if (!hFont)
     {
         DeleteDC(hdc);
@@ -217,7 +267,12 @@ std::string PrintDocument(const TextBuffer& buffer, const PrintRequest& req)
     int       usableWidth  = std::max(0, usableRight  - usableLeft);
     int       usableHeight = std::max(0, usableBottom - usableTop);
 
-    int charsPerLine   = std::max(1, usableWidth  / charWidth);
+    // Use the caller-supplied chars-per-line when set (WYSIWYG mode passes
+    // its DPI-independent value so the print wrap matches what the user sees
+    // on screen). Otherwise fall back to GDI's measurement.
+    int charsPerLine   = (req.overrideCharsPerLine > 0)
+                         ? req.overrideCharsPerLine
+                         : std::max(1, usableWidth  / charWidth);
     int linesPerPage   = std::max(1, (usableHeight - lineHeight) / lineHeight); // -1 for footer
     // Reserve the very bottom row for the footer.
     const int footerY = usableTop + linesPerPage * lineHeight;
