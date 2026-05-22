@@ -1,29 +1,39 @@
 #include "RtfReader.h"
-#include "CharStyle.h"
+#include "editor/CharStyle.h"
+#include "render/FontFace.h"
 #include <cctype>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 namespace
 {
+    // Map a body-encountered point size to the closest FontSize enum index.
+    // FontSize has four discrete values (Small=12, Medium=16, Large=20,
+    // ExtraLarge=24); anything in between snaps to the nearest bucket.
+    uint8_t MapPointsToSizeIdx(int pt)
+    {
+        if (pt <= 13) return 0; // Small
+        if (pt <= 17) return 1; // Medium
+        if (pt <= 22) return 2; // Large
+        return 3;               // ExtraLarge
+    }
+
     // Single-pass RTF parser. We don't build an AST — we walk the byte
-    // stream and emit characters with the current style as we go.
+    // stream and emit characters with the current style/face/size as we go.
     //
     // State that matters:
-    //   - braceDepth: current brace nesting (starts at 0; '{' increments,
-    //     '}' decrements).
-    //   - skipFromDepth: when > 0, every literal-text byte and every
-    //     non-style-toggling control word inside the group at depth
-    //     `skipFromDepth` (and any nested) is dropped. Reset to 0 when
-    //     the closing brace at that depth is seen. Style toggles
-    //     encountered inside are also ignored (consistent with how
-    //     destinations like \fonttbl don't actually want their
-    //     content to alter the body's style).
-    //   - styleStack: each '{' pushes the current style; '}' pops back.
-    //     This is how RTF scopes style changes — toggles set inside a
-    //     group are reverted when the group closes.
-    //   - curStyle: the active style bits (initially 0).
+    //   - braceDepth, skipFromDepth, styleStack, curStyle: as before
+    //   - fontTblOpenDepth: brace depth where \fonttbl opened (0 = not in)
+    //   - fontTblNames: map of \fN index -> family name parsed from
+    //     {\f0 Cascadia Mono;}{\f1 JetBrains Mono;}... groups
+    //   - curFaceIdx: body-level \fN state. -1 means "no \fN seen since
+    //     start of body" (= Inherit). \fN sets it to N; the resolved face
+    //     comes from fontTblNames + FontFaceFromFamilyName.
+    //   - curHalfPt:   body-level \fsN state. 0 = "no body \fs seen" (=
+    //     Inherit). headerFsHalfPoints captures the pre-body \fs so the
+    //     resolver can fold "matches doc default" back to Inherit.
     struct Parser
     {
         const std::string& src;
@@ -32,31 +42,59 @@ namespace
         int braceDepth   = 0;
         int skipFromDepth = 0;
         uint8_t curStyle = 0;
-        std::vector<uint8_t> styleStack;     // saved on each '{'
+        std::vector<uint8_t> styleStack;
         std::vector<std::string>            lines;
-        std::vector<std::vector<uint8_t>>   styleRows;
-        // Header capture --------------------------------------------------
-        // \fs<N> half-points encountered before the first body byte.
-        int     headerFsHalfPoints = 0;
-        // The brace depth at which the \fonttbl group opened, or 0 when
-        // not currently inside one.
-        int     fontTblOpenDepth = 0;
-        // Once we see \f0 inside \fonttbl, switch to capturing literal
-        // text bytes into f0Family until ';' or '}' terminates the entry.
-        bool    capturingF0Name = false;
-        std::string f0Family;
-        // True while we're between the file header and the first text
-        // byte (i.e. \rtf1\ansi\fs24 etc.). We just keep this simple by
-        // not treating it specially — all those control words land in
-        // the unknown-bucket and are dropped without emission.
+        std::vector<std::vector<CharFormat>> formatRows;
+
+        // Header capture
+        int headerFsHalfPoints = 0;
+        int defaultFontIdx     = 0;     // \deffN value (defaults to 0)
+
+        // Font table parsing
+        int fontTblOpenDepth = 0;
+        int captureFontIdx   = -1;      // -1 = not capturing a name
+        std::string captureFontName;
+        std::unordered_map<int, std::string> fontTblNames;
+
+        // Body run state
+        int curFaceIdx = -1;            // -1 = Inherit
+        int curHalfPt  = 0;             // 0  = Inherit
 
         Parser(const std::string& s, FormattedTextBuffer& o) : src(s), out(o)
         {
             lines.emplace_back();
-            styleRows.emplace_back();
+            formatRows.emplace_back();
         }
 
         bool skipping() const { return skipFromDepth > 0; }
+
+        // Resolve curFaceIdx → CharFormat::face byte. Inherit when
+        //   - no body \fN seen yet
+        //   - curFaceIdx matches the document-default index (\deffN, ~ 0)
+        //     so chars at the doc default round-trip without becoming
+        //     "locked-in" explicit overrides.
+        uint8_t ResolveFaceForEmit() const
+        {
+            if (curFaceIdx < 0) return CharFormat::Inherit;
+            if (curFaceIdx == defaultFontIdx) return CharFormat::Inherit;
+            auto it = fontTblNames.find(curFaceIdx);
+            if (it == fontTblNames.end()) return CharFormat::Inherit;
+            FontFace face;
+            if (!FontFaceFromFamilyName(it->second.c_str(), face))
+                return CharFormat::Inherit;
+            return static_cast<uint8_t>(face);
+        }
+
+        // Resolve curHalfPt → CharFormat::size byte. Inherit when
+        //   - no body \fsN seen yet (== 0)
+        //   - body \fsN matches the header \fs (the doc default)
+        uint8_t ResolveSizeForEmit() const
+        {
+            if (curHalfPt <= 0) return CharFormat::Inherit;
+            if (headerFsHalfPoints > 0 && curHalfPt == headerFsHalfPoints)
+                return CharFormat::Inherit;
+            return MapPointsToSizeIdx(curHalfPt / 2);
+        }
 
         void emitByte(unsigned char b)
         {
@@ -64,7 +102,7 @@ namespace
             if (b == '\n')
             {
                 lines.emplace_back();
-                styleRows.emplace_back();
+                formatRows.emplace_back();
             }
             else if (b == '\r' || b == 0)
             {
@@ -73,11 +111,14 @@ namespace
             else
             {
                 lines.back().push_back(static_cast<char>(b));
-                styleRows.back().push_back(curStyle);
+                CharFormat f;
+                f.style = curStyle;
+                f.face  = ResolveFaceForEmit();
+                f.size  = ResolveSizeForEmit();
+                formatRows.back().push_back(f);
             }
         }
 
-        // Read a hex digit at pos (0-15) or -1 if not a hex digit.
         static int HexDigit(char c)
         {
             if (c >= '0' && c <= '9') return c - '0';
@@ -86,8 +127,6 @@ namespace
             return -1;
         }
 
-        // Parse the optional signed integer parameter of a control word.
-        // Returns true if a parameter was found and `outVal` is populated.
         bool ReadOptionalParam(int& outVal)
         {
             size_t start = pos;
@@ -108,9 +147,6 @@ namespace
             return true;
         }
 
-        // Consume the single space that RTF uses as a delimiter after a
-        // control word. RTF spec: a space immediately following a control
-        // word is consumed and NOT part of the body.
         void ConsumeControlWordDelimiter()
         {
             if (pos < src.size() && src[pos] == ' ')
@@ -128,11 +164,13 @@ namespace
                 || w == "bkmkstart" || w == "bkmkend" || w == "xe" || w == "tc";
         }
 
-        // Handle a parsed control word (and its optional numeric param).
-        // If we're inside a skip group, style toggles are no-ops; only
-        // destination markers can be observed (to skip a freshly opened
-        // nested group). The space delimiter is already consumed by the
-        // caller.
+        // True iff we haven't emitted any body text yet (so \fs / \deff
+        // seen now refers to document-level defaults).
+        bool InHeader() const
+        {
+            return lines.size() == 1 && lines.back().empty();
+        }
+
         void HandleControlWord(const std::string& word, bool hasParam, int param)
         {
             if (word == "par" || word == "line")
@@ -140,9 +178,6 @@ namespace
                 emitByte('\n');
                 return;
             }
-            // Style toggles. RTF semantics: \b (no param) = on, \b0 = off,
-            // \b1 = on. Same for \i and \strike. \ul is "on", \ulnone is
-            // "off"; \ul0 is also "off" (Word writes this).
             auto setBit = [&](uint8_t bit, bool on) {
                 if (skipping()) return;
                 if (on) curStyle |=  bit;
@@ -154,62 +189,78 @@ namespace
             if (word == "ul")     { setBit(CharStyle::Underline,     !(hasParam && param == 0)); return; }
             if (word == "ulnone") { setBit(CharStyle::Underline, false); return; }
 
-            // Document-level point size (half-points). RTF writers emit
-            // \fsN once near the top of the file. We capture the latest
-            // value seen before the first body byte; values seen later
-            // (mid-document size changes) are ignored — per-run size is
-            // not supported in Phase 2.
+            if (word == "deff" && hasParam)
+            {
+                defaultFontIdx = param;
+                return;
+            }
+
             if (word == "fs" && hasParam)
             {
-                if (lines.size() == 1 && lines.back().empty())
+                if (InHeader())
                     headerFsHalfPoints = param;
+                else
+                    curHalfPt = param;
                 return;
             }
 
-            // Font index used by following text. Inside \fonttbl, \f0
-            // introduces the body-font name entry; capture its literal
-            // text up to the next ';' or '}'. We only care about \f0 —
-            // additional font-table entries are skipped.
-            if (word == "f" && hasParam && fontTblOpenDepth > 0)
+            if (word == "f" && hasParam)
             {
-                if (param == 0 && f0Family.empty())
-                    capturingF0Name = true;
+                // Inside \fonttbl: this introduces a font-table entry; we
+                // begin capturing the literal text bytes that follow as the
+                // entry's family name until ';' or '}'.
+                if (fontTblOpenDepth > 0)
+                {
+                    captureFontIdx = param;
+                    captureFontName.clear();
+                    return;
+                }
+                // In the body: \fN switches the active face for following
+                // text. The renderer falls back to doc default when the
+                // index is unmapped (e.g., font missing from the table).
+                curFaceIdx = param;
                 return;
             }
 
-            // Destination keyword? Start skipping the current group.
             if (IsDestinationKeyword(word))
             {
                 if (skipFromDepth == 0)
-                    skipFromDepth = braceDepth;   // skip until this brace closes
+                    skipFromDepth = braceDepth;
                 if (word == "fonttbl")
                     fontTblOpenDepth = braceDepth;
                 return;
             }
-            // Other control words: unknown to us. Already consumed.
+        }
+
+        // While inside \fonttbl and capturing a font name, drain literal
+        // text bytes into captureFontName until we hit ';' or any
+        // structural character; finalize on terminator.
+        bool FeedFontTableCapture()
+        {
+            if (captureFontIdx < 0) return false;
+            char peek = src[pos];
+            if (peek == ';' || peek == '}' || peek == '{' || peek == '\\')
+            {
+                // Strip trailing whitespace from the captured name.
+                while (!captureFontName.empty()
+                       && (captureFontName.back() == ' '
+                           || captureFontName.back() == '\t'))
+                    captureFontName.pop_back();
+                fontTblNames[captureFontIdx] = std::move(captureFontName);
+                captureFontIdx = -1;
+                captureFontName.clear();
+                return false; // let normal parsing handle the char
+            }
+            ++pos;
+            // Skip leading whitespace.
+            if (!(captureFontName.empty() && (peek == ' ' || peek == '\t')))
+                captureFontName.push_back(peek);
+            return true;
         }
 
         void ParseOne()
         {
-            // While inside the \fonttbl group capturing the body font's
-            // name, every literal text byte feeds f0Family until the entry
-            // terminator (';') or a structural character is seen.
-            if (capturingF0Name)
-            {
-                char peek = src[pos];
-                if (peek == ';' || peek == '}' || peek == '{' || peek == '\\')
-                {
-                    capturingF0Name = false;
-                    // fall through and let normal parsing handle the char
-                }
-                else
-                {
-                    ++pos;
-                    if (!(f0Family.empty() && (peek == ' ' || peek == '\t')))
-                        f0Family.push_back(peek);
-                    return;
-                }
-            }
+            if (FeedFontTableCapture()) return;
 
             char ch = src[pos++];
             if (ch == '{')
@@ -236,7 +287,6 @@ namespace
             {
                 if (pos >= src.size()) return;
                 char ch2 = src[pos];
-                // Control symbol: single non-alpha character following \.
                 if (!std::isalpha(static_cast<unsigned char>(ch2)))
                 {
                     ++pos;
@@ -245,13 +295,11 @@ namespace
                     if (ch2 == '}')  { emitByte('}');  return; }
                     if (ch2 == '\n' || ch2 == '\r')
                     {
-                        // RTF treats \<newline> as a paragraph break.
                         emitByte('\n');
                         return;
                     }
                     if (ch2 == '\'')
                     {
-                        // Hex byte escape \'hh
                         if (pos + 1 < src.size())
                         {
                             int hi = HexDigit(src[pos]);
@@ -264,18 +312,12 @@ namespace
                     }
                     if (ch2 == '*')
                     {
-                        // Ignorable-destination marker. The control word
-                        // that immediately follows introduces a group we
-                        // should skip even if we know the keyword.
                         if (skipFromDepth == 0)
                             skipFromDepth = braceDepth;
                         return;
                     }
-                    // Unknown control symbol; drop.
                     return;
                 }
-
-                // Control word: alpha+ optionally followed by signed digits.
                 std::string word;
                 while (pos < src.size() && std::isalpha(static_cast<unsigned char>(src[pos])))
                 {
@@ -290,10 +332,8 @@ namespace
             }
             if (ch == '\n' || ch == '\r')
             {
-                // Whitespace between RTF tokens; ignored in the body.
                 return;
             }
-            // Plain text byte.
             emitByte(static_cast<unsigned char>(ch));
         }
 
@@ -305,15 +345,12 @@ namespace
 
         void Finalize()
         {
-            // If the parse pushed a trailing empty line because the file
-            // ended with \par, drop it so the document doesn't gain a
-            // phantom row vs. what was saved.
-            if (lines.size() > 1 && lines.back().empty() && styleRows.back().empty())
+            if (lines.size() > 1 && lines.back().empty() && formatRows.back().empty())
             {
                 lines.pop_back();
-                styleRows.pop_back();
+                formatRows.pop_back();
             }
-            out.SetLines(std::move(lines), std::move(styleRows));
+            out.SetLines(std::move(lines), std::move(formatRows));
         }
     };
 }
@@ -330,7 +367,12 @@ bool Read(const std::string& rtf, FormattedTextBuffer& out, Header* outHeader)
     if (outHeader)
     {
         outHeader->pointSize = p.headerFsHalfPoints > 0 ? p.headerFsHalfPoints / 2 : 0;
-        outHeader->fontFamily = p.f0Family;
+        // Family name of the default \fN entry (index 0 unless \deff
+        // overrode it). Used by Application::OpenFile to restore the
+        // document's saved font face.
+        auto it = p.fontTblNames.find(p.defaultFontIdx);
+        if (it != p.fontTblNames.end()) outHeader->fontFamily = it->second;
+        else                            outHeader->fontFamily.clear();
     }
     return true;
 }

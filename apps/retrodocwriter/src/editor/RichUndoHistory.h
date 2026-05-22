@@ -6,14 +6,15 @@
 
 // Undo/redo for a FormattedTextBuffer. Mirrors core/editor/UndoHistory's
 // API and 200-entry cap, but snapshots both text lines AND the parallel
-// style vectors so style changes are reversible alongside edits.
+// CharFormat vectors so style/face/size changes are reversible alongside
+// content edits.
 //
 // RetroEdit continues to use the plain-text UndoHistory in core/. This
 // class lives in the RetroDocWriter app only.
 struct RichUndoState
 {
-    std::vector<std::string>             lines;
-    std::vector<std::vector<uint8_t>>    styles;
+    std::vector<std::string>                  lines;
+    std::vector<std::vector<CharFormat>>      formats;
     int cursorRow = 0;
     int cursorCol = 0;
 };

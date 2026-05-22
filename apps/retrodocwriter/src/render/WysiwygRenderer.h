@@ -2,7 +2,9 @@
 #include "render/FontFace.h"
 #include "render/Theme.h"
 #include <SDL3/SDL.h>
+#include <cstdint>
 #include <memory>
+#include <unordered_map>
 
 class GlyphCache;
 class TextBuffer;
@@ -77,14 +79,19 @@ public:
                                     double leftMarginIn, double rightMarginIn);
 
 private:
-    // Rebuild the internal GlyphCache if any of (face, pointSize, screenDpi)
-    // differ from what we have cached. Called transparently from Draw().
-    void EnsureFont(FontFace face, int pointSize, int dpi);
+    // Resolve and return the cache for a (face, pointSize) combo at the
+    // current dpi, creating it on demand. Caches are kept in m_caches
+    // until the dpi changes (e.g. resize across monitors with different
+    // DPIs) — then the whole map is invalidated.
+    GlyphCache* CacheFor(FontFace face, int pointSize, int dpi);
+    static uint32_t MakeCacheKey(FontFace face, int pointSize)
+    {
+        return (static_cast<uint32_t>(face) << 16)
+             | static_cast<uint32_t>(pointSize & 0xFFFF);
+    }
 
     SDL_Renderer* m_sdl    = nullptr;
     const Theme&  m_theme;
-    std::unique_ptr<GlyphCache> m_glyphs;
-    FontFace m_lastFace      = FontFace::CascadiaMono;
-    int      m_lastPointSize = 0;
-    int      m_lastDpi       = 0;
+    std::unordered_map<uint32_t, std::unique_ptr<GlyphCache>> m_caches;
+    int      m_lastDpi  = 0;
 };
