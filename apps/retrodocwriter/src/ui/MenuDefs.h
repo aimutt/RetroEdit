@@ -17,10 +17,10 @@ struct MenuDef
 
 // Menu mnemonic characters (Alt+letter to open each menu)
 // Indices match GetMenuDefs() order:
-// File=0, Edit=1, Search=2, View=3, Page=4, Tools=5, Options=6, Help=7
+// File=0, Edit=1, Format=2, Search=3, View=4, Page=5, Tools=6, Options=7, Help=8
 inline char GetMenuMnemonic(int menuIdx)
 {
-    static const char mnemonics[] = { 'f', 'e', 's', 'v', 'p', 't', 'o', 'h' };
+    static const char mnemonics[] = { 'f', 'e', 'r', 's', 'v', 'p', 't', 'o', 'h' };
     if (menuIdx < 0 || menuIdx >= static_cast<int>(sizeof(mnemonics)))
         return '\0';
     return mnemonics[menuIdx];
@@ -49,30 +49,36 @@ inline const std::vector<MenuDef>& GetMenuDefs()
             { "Select All",   "^A"   },
             { "Find...",      "^F"   },
         }},
-        { "Search", 13, {
+        { "Format", 13, {
+            { "Bold",          "^B" },   // shortcut column shows On/Off at draw time
+            { "Italic",        "^I" },
+            { "Underline",     "^U" },
+            { "Strikethrough", ""   },
+        }},
+        { "Search", 22, {
             { "Find...",      "^F"   },
             { "Find Next",    "F6"   },
         }},
-        { "View", 21, {
+        { "View", 30, {
             { "(coming soon)", "" },
         }},
-        { "Page", 27, {
+        { "Page", 36, {
             { "Margins...",  ""  },
         }},
-        { "Tools", 33, {
+        { "Tools", 42, {
             { "Add to Dictionary...",      "" },
             { "Remove from Dictionary...", "" },
             { "",                          "" },
             { "Check Word...",             "" },
         }},
-        { "Options", 40, {
+        { "Options", 49, {
             { "Font...",              ""     },
             { "Word Wrap",            ""     },   // shortcut column shows On/Off at draw time
             { "Word Count",           ""     },   // shortcut column shows On/Off at draw time
             { "Spell Check",          ""     },   // shortcut column shows On/Off at draw time
             { "Highlight Misspelled", ""     },   // shortcut column shows On/Off at draw time
         }},
-        { "Help", 49, {
+        { "Help", 58, {
             { "Help",         "F1"   },
             { "",             ""     },
             { "About...",     ""     },

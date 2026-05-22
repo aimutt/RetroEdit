@@ -10,10 +10,10 @@
 #include "ui/MenuDefs.h"
 #include "ui/RetroUi.h"
 #include "editor/Dictionary.h"
-#include "editor/FileDocument.h"
+#include "editor/RichFileDocument.h"
 #include "editor/FileSettings.h"
 #include "editor/Selection.h"
-#include "editor/UndoHistory.h"
+#include "editor/RichUndoHistory.h"
 #include "editor/WordWrap.h"
 #include "platform/Print.h"
 #include <SDL3/SDL.h>
@@ -42,6 +42,7 @@ enum class PromptMode
     CheckWordDialog,// text input -> Dictionary::Contains, result in status bar
     PrintDialog,    // full print dialog (printer, copies, range, orientation, margins)
     MarginsDialog,  // WYSIWYG page margins (per-document)
+    ConfirmSaveAsRtf, // Ctrl+S on a .txt that has formatting: Y = SaveAs.rtf, N = flatten + save .txt
 };
 
 // Fields in the Print dialog, ordered for Tab cycling.
@@ -107,7 +108,7 @@ private:
     void EraseSelection();
     void PushUndoBeforeEdit();
     void EnsureUndoBeforeInsert();
-    void ApplyUndoState(const UndoState& s);
+    void ApplyUndoState(const RichUndoState& s);
     void DoUndo();
     void DoRedo();
 
@@ -176,6 +177,16 @@ private:
     void PrintAdjustField(int dir);                 // Up / Down (or </> printer)
     void PrintTextEdit(char ch);                    // digit or '.'
     void PrintBackspace();
+
+    // Per-character formatting (Format menu / Ctrl+B / Ctrl+I / Ctrl+U).
+    // With a non-empty selection the bit is XOR-toggled across the range
+    // (smart toggle — clear if all selected chars have it, else set). With
+    // no selection the bit toggles in m_currentStyle for next-typed input.
+    void ToggleBold();
+    void ToggleItalic();
+    void ToggleUnderline();
+    void ToggleStrikethrough();
+    void ApplyStyleAction(uint8_t bit);
 
     // WYSIWYG mode and Margins dialog
     void ToggleWysiwyg();
@@ -272,8 +283,14 @@ private:
     std::unique_ptr<ScreenBuffer>   m_screenBuffer;
     std::unique_ptr<RetroRenderer>  m_renderer;
     std::unique_ptr<RetroUi>        m_ui;
-    std::unique_ptr<FileDocument>   m_document;
+    std::unique_ptr<RichFileDocument> m_document;
     Cursor                          m_cursor;
     Selection                       m_selection;
-    UndoHistory                     m_undoHistory;
+    RichUndoHistory                 m_undoHistory;
+
+    // Per-character style applied to next-typed input when no selection is
+    // active. Toggled by Ctrl+B / Ctrl+I / Ctrl+U and the Format menu items
+    // (Step 5 wires the UI). Stored here so Render() can surface a status-bar
+    // indicator showing the active style.
+    uint8_t                         m_currentStyle = 0;
 };

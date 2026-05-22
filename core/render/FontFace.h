@@ -67,3 +67,30 @@ inline bool FontFaceIsBold(FontFace face)
 }
 
 inline int FontFaceCount() { return static_cast<int>(FontFace::Count_); }
+
+// Reverse lookup: RTF font-table family name → FontFace. Returns true and
+// sets `out` on a match; returns false when the family string doesn't
+// correspond to any bundled face (the caller can keep its current font).
+// Match is case-insensitive on ASCII; trailing/leading whitespace is
+// trimmed by the caller before invoking. Bold variants are not selectable
+// here — bold is a per-character style bit in RetroDocWriter, not a face.
+inline bool FontFaceFromFamilyName(const char* name, FontFace& out)
+{
+    if (!name) return false;
+    auto iequals = [](const char* a, const char* b) {
+        while (*a && *b)
+        {
+            char ca = *a, cb = *b;
+            if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca + 32);
+            if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb + 32);
+            if (ca != cb) return false;
+            ++a; ++b;
+        }
+        return *a == 0 && *b == 0;
+    };
+    if (iequals(name, "Cascadia Mono")) { out = FontFace::CascadiaMono;  return true; }
+    if (iequals(name, "JetBrains Mono")){ out = FontFace::JetBrainsMono; return true; }
+    if (iequals(name, "IBM Plex Mono")) { out = FontFace::IBMPlexMono;   return true; }
+    if (iequals(name, "VT323"))         { out = FontFace::VT323;         return true; }
+    return false;
+}

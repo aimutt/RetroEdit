@@ -52,9 +52,11 @@ GlyphCache::~GlyphCache()
     if (m_font) TTF_CloseFont(m_font);
 }
 
-SDL_Texture* GlyphCache::GlyphTexture(char32_t codepoint, int& outWidth, int& outHeight)
+SDL_Texture* GlyphCache::GlyphTexture(char32_t codepoint, int styleBits,
+                                      int& outWidth, int& outHeight)
 {
-    auto it = m_glyphs.find(codepoint);
+    uint64_t key = MakeKey(codepoint, styleBits);
+    auto it = m_glyphs.find(key);
     if (it != m_glyphs.end())
     {
         outWidth  = it->second.width;
@@ -64,11 +66,16 @@ SDL_Texture* GlyphCache::GlyphTexture(char32_t codepoint, int& outWidth, int& ou
 
     CachedGlyph entry;
 
+    // Set the synthetic style before rendering. SDL_ttf applies bold/italic/
+    // underline/strikethrough at glyph-render time; the resulting surface
+    // bakes the style in, so the cached texture is style-correct forever.
+    TTF_SetFontStyle(m_font, styleBits);
+
     SDL_Color white = { 255, 255, 255, 255 };
     SDL_Surface* surface = TTF_RenderGlyph_Blended(m_font, codepoint, white);
     if (!surface)
     {
-        m_glyphs[codepoint] = entry;       // remember the miss too
+        m_glyphs[key] = entry;             // remember the miss too
         outWidth = outHeight = 0;
         return nullptr;
     }
@@ -81,19 +88,19 @@ SDL_Texture* GlyphCache::GlyphTexture(char32_t codepoint, int& outWidth, int& ou
     if (entry.texture)
         SDL_SetTextureScaleMode(entry.texture, SDL_SCALEMODE_LINEAR);
 
-    m_glyphs[codepoint] = entry;
+    m_glyphs[key] = entry;
     outWidth  = entry.width;
     outHeight = entry.height;
     return entry.texture;
 }
 
-void GlyphCache::DrawGlyph(char32_t codepoint, int x, int y, Color tint)
+void GlyphCache::DrawGlyph(char32_t codepoint, int x, int y, Color tint, int styleBits)
 {
     if (!m_font) return;
     if (codepoint <= U' ') return;        // space and below render as background only
 
     int gw = 0, gh = 0;
-    SDL_Texture* tex = GlyphTexture(codepoint, gw, gh);
+    SDL_Texture* tex = GlyphTexture(codepoint, styleBits, gw, gh);
     if (!tex) return;
 
     SDL_SetTextureColorMod(tex, tint.r, tint.g, tint.b);
@@ -111,22 +118,27 @@ void GlyphCache::DrawGlyph(char32_t codepoint, int x, int y, Color tint)
     SDL_RenderTexture(m_renderer, tex, nullptr, &dst);
 }
 
-int GlyphCache::GlyphAdvance(char32_t codepoint) const
+int GlyphCache::GlyphAdvance(char32_t codepoint, int styleBits) const
 {
     if (!m_font) return 0;
+    // TTF_GetGlyphMetrics is style-sensitive (bold widens; italic skews on
+    // proportional fonts; safe no-op on monospace). Set the style before
+    // querying. m_font is a pointer member, so mutating the font's internal
+    // state is allowed even from a const method.
+    TTF_SetFontStyle(m_font, styleBits);
     int minx, maxx, miny, maxy, advance;
     if (TTF_GetGlyphMetrics(m_font, codepoint, &minx, &maxx, &miny, &maxy, &advance))
         return advance;
     return m_cellWidth; // safe fallback (monospace assumption)
 }
 
-void GlyphCache::DrawGlyphAt(char32_t codepoint, int x, int y, Color tint)
+void GlyphCache::DrawGlyphAt(char32_t codepoint, int x, int y, Color tint, int styleBits)
 {
     if (!m_font) return;
     if (codepoint <= U' ') return;
 
     int gw = 0, gh = 0;
-    SDL_Texture* tex = GlyphTexture(codepoint, gw, gh);
+    SDL_Texture* tex = GlyphTexture(codepoint, styleBits, gw, gh);
     if (!tex) return;
 
     SDL_SetTextureColorMod(tex, tint.r, tint.g, tint.b);
