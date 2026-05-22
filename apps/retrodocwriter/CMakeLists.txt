@@ -1,6 +1,11 @@
 add_executable(RetroDocWriter
     src/main.cpp
     src/app/Application.cpp
+    src/editor/FormattedTextBuffer.cpp
+    src/editor/RichFileDocument.cpp
+    src/editor/RichUndoHistory.cpp
+    src/editor/RtfReader.cpp
+    src/editor/RtfWriter.cpp
     src/render/WysiwygRenderer.cpp
     src/ui/RetroUi.cpp
 )

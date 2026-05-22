@@ -248,6 +248,24 @@ void RetroUi::DrawStatusBar(ScreenBuffer& buffer, const Cursor& cursor,
     if (posX > 0)
         buffer.WriteText(posX, m_layout.ROW_STATUS, pos,
                          m_theme.dimText, m_theme.background);
+
+    // B I U S indicators for the next-typed style. 8 cells (" B I U S"),
+    // placed just left of the position string with a 2-cell gap.
+    constexpr int kIndicatorWidth = 8;
+    int indicatorX = posX - kIndicatorWidth - 2;
+    if (indicatorX > static_cast<int>(state.statusMessage.size()) + 2)
+    {
+        const char letters[4] = { 'B', 'I', 'U', 'S' };
+        const uint8_t bits[4] = { 0x01, 0x02, 0x04, 0x08 };
+        for (int i = 0; i < 4; ++i)
+        {
+            bool on = (state.currentStyle & bits[i]) != 0;
+            Color fg = on ? m_theme.reverseForeground : m_theme.dimText;
+            Color bg = on ? m_theme.reverseBackground : m_theme.background;
+            buffer.PutChar(indicatorX + i * 2, m_layout.ROW_STATUS,
+                           static_cast<char32_t>(letters[i]), fg, bg);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,10 +336,11 @@ namespace
                              bool wysiwygEnabled)
     {
         (void)wysiwygEnabled; // RetroDocWriter is always WYSIWYG; no toggle item.
-        if (menuIdx == 6 && itemIdx == 1) return wordWrap            ? "On" : "Off";
-        if (menuIdx == 6 && itemIdx == 2) return showWordCount       ? "On" : "Off";
-        if (menuIdx == 6 && itemIdx == 3) return spellCheckEnabled   ? "On" : "Off";
-        if (menuIdx == 6 && itemIdx == 4) return highlightMisspelled ? "On" : "Off";
+        // Options is menu idx 7 in RetroDocWriter (after Format was inserted at 2).
+        if (menuIdx == 7 && itemIdx == 1) return wordWrap            ? "On" : "Off";
+        if (menuIdx == 7 && itemIdx == 2) return showWordCount       ? "On" : "Off";
+        if (menuIdx == 7 && itemIdx == 3) return spellCheckEnabled   ? "On" : "Off";
+        if (menuIdx == 7 && itemIdx == 4) return highlightMisspelled ? "On" : "Off";
         return item.shortcut;
     }
 

@@ -4,6 +4,7 @@
 #include "render/ScreenBuffer.h"
 #include "render/Theme.h"
 #include "editor/TextBuffer.h"
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -87,6 +88,11 @@ struct EditorUiState
     bool        marginsDialogActive = false;
     std::string marginEditText[4];          // top, bottom, left, right
     int         marginFocusIdx      = 0;
+
+    // Current per-character style applied to next-typed input (Format menu /
+    // Ctrl+B/I/U). Reflected in the status-bar B/I/U/S indicators. CharStyle
+    // bitmask: Bold=0x1, Italic=0x2, Underline=0x4, Strikethrough=0x8.
+    uint8_t     currentStyle       = 0;
 };
 
 class RetroUi

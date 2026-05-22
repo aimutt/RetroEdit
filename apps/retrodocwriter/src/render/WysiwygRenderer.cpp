@@ -1,6 +1,7 @@
 #include "WysiwygRenderer.h"
 #include "render/GlyphCache.h"
 #include "editor/TextBuffer.h"
+#include "editor/FormattedTextBuffer.h"
 #include "platform/AssetPath.h"
 
 #include <SDL3_ttf/SDL_ttf.h>
@@ -290,6 +291,12 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
     int sr = 0, sc = 0, er = 0, ec = 0;
     if (ctx.selActive) selRange(sr, sc, er, ec);
 
+    // Per-char style lookup. When no FormattedTextBuffer is provided, every
+    // character renders as styleBits = 0 (plain — same as Phase 1).
+    auto styleAt = [&](int row, int col) -> int {
+        return ctx.formatted ? ctx.formatted->StyleAt(row, col) : 0;
+    };
+
     int visualLine = 0;
     for (int li = 0; li < ctx.buffer->LineCount(); ++li)
     {
@@ -338,11 +345,13 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
                         int xLo = usableX;
                         for (int c = segLo; c < hiLo && c < segHi; ++c)
                             xLo += m_glyphs->GlyphAdvance(
-                                static_cast<char32_t>(static_cast<unsigned char>(line[c])));
+                                static_cast<char32_t>(static_cast<unsigned char>(line[c])),
+                                styleAt(li, c));
                         int xHi = xLo;
                         for (int c = hiLo; c < hiHi; ++c)
                             xHi += m_glyphs->GlyphAdvance(
-                                static_cast<char32_t>(static_cast<unsigned char>(line[c])));
+                                static_cast<char32_t>(static_cast<unsigned char>(line[c])),
+                                styleAt(li, c));
                         FillRect(m_sdl, xLo, textY, std::max(2, xHi - xLo), lh,
                                  m_theme.reverseBackground);
                     }
@@ -352,12 +361,13 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
                 for (size_t k = 0; k < seg.size(); ++k)
                 {
                     char32_t ch = static_cast<char32_t>(static_cast<unsigned char>(seg[k]));
-                    int adv = m_glyphs->GlyphAdvance(ch);
+                    int srcCol  = segCol0 + static_cast<int>(k);
+                    int style   = styleAt(li, srcCol);
+                    int adv = m_glyphs->GlyphAdvance(ch, style);
 
                     Color fg = m_theme.normalText;
                     if (ctx.selActive)
                     {
-                        int srcCol = segCol0 + static_cast<int>(k);
                         int colLo  = (li == sr) ? sc : 0;
                         int colHi  = (li == er) ? ec : static_cast<int>(line.size());
                         if (li >= sr && li <= er && srcCol >= colLo && srcCol < colHi)
@@ -365,7 +375,7 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
                     }
 
                     if (ch > U' ')
-                        m_glyphs->DrawGlyphAt(ch, x, textY, fg);
+                        m_glyphs->DrawGlyphAt(ch, x, textY, fg, style);
                     x += adv;
                 }
 
@@ -381,7 +391,8 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
                         int cx = usableX;
                         for (int c = segLo; c < ctx.cursorCol && c < segHi; ++c)
                             cx += m_glyphs->GlyphAdvance(
-                                static_cast<char32_t>(static_cast<unsigned char>(line[c])));
+                                static_cast<char32_t>(static_cast<unsigned char>(line[c])),
+                                styleAt(li, c));
                         FillRect(m_sdl, cx, textY, 2, lh, m_theme.brightText);
                     }
                 }

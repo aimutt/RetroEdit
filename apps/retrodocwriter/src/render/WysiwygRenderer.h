@@ -6,6 +6,7 @@
 
 class GlyphCache;
 class TextBuffer;
+class FormattedTextBuffer;
 
 // Per-document page margins (in inches). Default = 1" all around.
 struct WysiwygMargins
@@ -32,6 +33,11 @@ public:
     struct DrawContext
     {
         const TextBuffer* buffer = nullptr;
+        // Optional per-character formatting. When non-null, each character is
+        // rendered with the corresponding CharStyle bitmask. When null, every
+        // character is treated as styleBits = 0 (plain). Must point to the
+        // same content as `buffer` (FormattedTextBuffer wraps a TextBuffer).
+        const FormattedTextBuffer* formatted = nullptr;
         int  cursorRow     = 0;
         int  cursorCol     = 0;
         bool cursorVisible = false;

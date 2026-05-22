@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "editor/CharStyle.h"
 #include "editor/WordCount.h"
 #include "platform/AppData.h"
 #include "platform/AssetPath.h"
@@ -61,7 +62,7 @@ Application::Application()
 
     m_screenBuffer = std::make_unique<ScreenBuffer>(m_screenColumns, rows);
     m_ui           = std::make_unique<RetroUi>(m_theme, m_layout);
-    m_document     = std::make_unique<FileDocument>();
+    m_document     = std::make_unique<RichFileDocument>();
 
     SDL_StartTextInput(m_window->GetWindow());
 
@@ -134,6 +135,30 @@ void Application::OpenFile(const std::string& path)
         m_selection.Clear();
         m_undoHistory.ClearAll();
         LoadSidecarForCurrentDocument();
+
+        // RTF loads carry document font + size in their header. Apply them
+        // so reopening the file restores the look it was saved with —
+        // otherwise we'd snap back to whatever the global FontSettings
+        // happen to be. ApplyFontSettings rebuilds the renderer, so we
+        // only call it when something actually changed.
+        FontSettings desired = m_fontSettings;
+        int loadedPt = m_document->LoadedPointSize();
+        if (loadedPt > 0)
+        {
+            if      (loadedPt <= 13) desired.size = FontSize::Small;
+            else if (loadedPt <= 17) desired.size = FontSize::Medium;
+            else if (loadedPt <= 22) desired.size = FontSize::Large;
+            else                     desired.size = FontSize::ExtraLarge;
+        }
+        FontFace mappedFace;
+        if (!m_document->LoadedFontFamily().empty()
+            && FontFaceFromFamilyName(m_document->LoadedFontFamily().c_str(), mappedFace))
+        {
+            desired.face = mappedFace;
+        }
+        if (!(desired == m_fontSettings))
+            ApplyFontSettings(desired);
+
         m_statusMessage = "Ready";
         UpdateWindowTitle();
     }
@@ -305,12 +330,13 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
         {
             case SDL_SCANCODE_F: OpenMenu(0); return;   // File
             case SDL_SCANCODE_E: OpenMenu(1); return;   // Edit
-            case SDL_SCANCODE_S: OpenMenu(2); return;   // Search
-            case SDL_SCANCODE_V: OpenMenu(3); return;   // View
-            case SDL_SCANCODE_P: OpenMenu(4); return;   // Page
-            case SDL_SCANCODE_T: OpenMenu(5); return;   // Tools
-            case SDL_SCANCODE_O: OpenMenu(6); return;   // Options
-            case SDL_SCANCODE_H: OpenMenu(7); return;   // Help
+            case SDL_SCANCODE_R: OpenMenu(2); return;   // foRmat
+            case SDL_SCANCODE_S: OpenMenu(3); return;   // Search
+            case SDL_SCANCODE_V: OpenMenu(4); return;   // View
+            case SDL_SCANCODE_P: OpenMenu(5); return;   // Page
+            case SDL_SCANCODE_T: OpenMenu(6); return;   // Tools
+            case SDL_SCANCODE_O: OpenMenu(7); return;   // Options
+            case SDL_SCANCODE_H: OpenMenu(8); return;   // Help
             default: return;
         }
     }
@@ -411,7 +437,7 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
                 EraseSelection();
             int endRow = 0, endCol = 0;
             m_document->Buffer().InsertText(m_cursor.column, m_cursor.row,
-                                            "    ", endRow, endCol);
+                                            "    ", m_currentStyle, endRow, endCol);
             m_cursor.row    = endRow;
             m_cursor.column = endCol;
             m_document->MarkDirty();
@@ -534,6 +560,19 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
             if (ctrl) OpenPrintDialog();
             break;
 
+        // --- Per-character formatting (Format menu shortcuts) ---
+        case SDL_SCANCODE_B:
+            if (ctrl) ToggleBold();
+            break;
+
+        case SDL_SCANCODE_I:
+            if (ctrl) ToggleItalic();
+            break;
+
+        case SDL_SCANCODE_U:
+            if (ctrl) ToggleUnderline();
+            break;
+
         case SDL_SCANCODE_F2:
             SaveDocument();
             break;
@@ -572,10 +611,11 @@ void Application::HandlePromptKeyDown(const SDL_KeyboardEvent& key)
     // Confirm dialogs all share Y/N/Esc semantics — keyboard path delegates to
     // the same ResolveConfirmYes / ResolveConfirmNo helpers used by the mouse
     // dispatcher so the two paths can't diverge.
-    if (m_promptMode == PromptMode::ConfirmExit      ||
-        m_promptMode == PromptMode::ConfirmExitClean ||
-        m_promptMode == PromptMode::ConfirmNew       ||
-        m_promptMode == PromptMode::ConfirmWordWrap)
+    if (m_promptMode == PromptMode::ConfirmExit         ||
+        m_promptMode == PromptMode::ConfirmExitClean    ||
+        m_promptMode == PromptMode::ConfirmNew          ||
+        m_promptMode == PromptMode::ConfirmWordWrap     ||
+        m_promptMode == PromptMode::ConfirmSaveAsRtf)
     {
         switch (key.scancode)
         {
@@ -926,10 +966,11 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
     }
 
     // Y/N confirm dialogs — outside-click cancels, hint clicks resolve.
-    if (m_promptMode == PromptMode::ConfirmExit      ||
-        m_promptMode == PromptMode::ConfirmExitClean ||
-        m_promptMode == PromptMode::ConfirmNew       ||
-        m_promptMode == PromptMode::ConfirmWordWrap)
+    if (m_promptMode == PromptMode::ConfirmExit         ||
+        m_promptMode == PromptMode::ConfirmExitClean    ||
+        m_promptMode == PromptMode::ConfirmNew          ||
+        m_promptMode == PromptMode::ConfirmWordWrap     ||
+        m_promptMode == PromptMode::ConfirmSaveAsRtf)
     {
         auto rect = m_ui->ConfirmDialogRect(m_screenColumns);
         if (!rect.Contains(cellCol, cellRow))
@@ -948,6 +989,9 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
                 break;
             case PromptMode::ConfirmWordWrap:
                 hint = "[Y] On      [N] Off      [Esc] Cancel";
+                break;
+            case PromptMode::ConfirmSaveAsRtf:
+                hint = "[Y] Save .rtf  [N] Save .txt  [Esc] Cancel";
                 break;
             default:
                 hint.clear(); // DrawConfirmDialog falls back to "[Y] Yes      [N] No"
@@ -1244,7 +1288,7 @@ void Application::HandleTextInput(const char* text)
                 m_lastActionWasInsert = true;
             }
             EnsureUndoBeforeInsert();
-            m_document->Buffer().InsertChar(m_cursor.column, m_cursor.row, *p);
+            m_document->Buffer().InsertChar(m_cursor.column, m_cursor.row, *p, m_currentStyle);
             ++m_cursor.column;
             m_document->MarkDirty();
             UpdateWindowTitle();
@@ -1427,9 +1471,9 @@ void Application::EnsureUndoBeforeInsert()
     }
 }
 
-void Application::ApplyUndoState(const UndoState& s)
+void Application::ApplyUndoState(const RichUndoState& s)
 {
-    m_document->Buffer().SetLines(s.lines);
+    m_document->Buffer().SetLines(s.lines, s.styles);
     m_cursor.row    = s.cursorRow;
     m_cursor.column = s.cursorCol;
     m_selection.Clear();
@@ -1498,7 +1542,7 @@ void Application::CopySelection()
     m_selection.GetRange(m_cursor.row, m_cursor.column,
                          startRow, startCol, endRow, endCol);
 
-    std::string text = m_document->Buffer().GetText(startRow, startCol, endRow, endCol);
+    std::string text = m_document->Buffer().Text().GetText(startRow, startCol, endRow, endCol);
     SDL_SetClipboardText(text.c_str());
     m_statusMessage = "Copied";
 }
@@ -1534,7 +1578,7 @@ void Application::PasteClipboard()
         EraseSelection();
 
     int endRow = 0, endCol = 0;
-    m_document->Buffer().InsertText(m_cursor.column, m_cursor.row, text, endRow, endCol);
+    m_document->Buffer().InsertText(m_cursor.column, m_cursor.row, text, m_currentStyle, endRow, endCol);
     m_cursor.row    = endRow;
     m_cursor.column = endCol;
     m_selection.Clear();
@@ -1562,9 +1606,9 @@ void Application::DoFind(const std::string& query)
     m_findQuery = query;
 
     int foundRow = 0, foundCol = 0;
-    if (m_document->Buffer().FindNext(query, m_findFromRow, m_findFromCol,
-                                      foundRow, foundCol,
-                                      m_findCaseInsensitive))
+    if (m_document->Buffer().Text().FindNext(query, m_findFromRow, m_findFromCol,
+                                              foundRow, foundCol,
+                                              m_findCaseInsensitive))
     {
         m_cursor.row    = foundRow;
         m_cursor.column = foundCol + static_cast<int>(query.size());
@@ -1601,7 +1645,7 @@ void Application::FindNext()
 
 void Application::NewFile()
 {
-    m_document = std::make_unique<FileDocument>();
+    m_document = std::make_unique<RichFileDocument>();
     m_cursor.row    = 0;
     m_cursor.column = 0;
     m_viewportTop   = 0;
@@ -1641,7 +1685,9 @@ void Application::CommitPrompt()
     {
         if (!m_promptText.empty())
         {
-            if (m_document->SaveAs(m_promptText))
+            if (m_document->SaveAs(m_promptText,
+                                   m_fontSettings.face,
+                                   FontSizePoints(m_fontSettings.size)))
             {
                 WriteSidecarForCurrentDocument();
                 m_statusMessage = "Saved.";
@@ -1735,7 +1781,19 @@ bool Application::SaveDocument()
         StartSaveAsPrompt();
         return false;
     }
-    if (m_document->Save())
+    // .txt (or any non-.rtf) target + formatting present → prompt user to
+    // choose between saving as .rtf (preserves formatting) or saving as
+    // plain text (drops it). Without the prompt a Ctrl+S would silently
+    // discard bold/italic/underline/strikethrough state.
+    if (!RichFileDocument::IsRtfPath(m_document->Filename())
+        && m_document->Buffer().HasAnyFormatting())
+    {
+        m_promptMode = PromptMode::ConfirmSaveAsRtf;
+        m_statusMessage.clear();
+        return false;
+    }
+    if (m_document->Save(m_fontSettings.face,
+                         FontSizePoints(m_fontSettings.size)))
     {
         WriteSidecarForCurrentDocument();
         m_statusMessage = "Saved.";
@@ -1854,7 +1912,18 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             }
             break;
 
-        case 2: // Search
+        case 2: // Format
+            switch (itemIdx)
+            {
+                case 0: ToggleBold();          break;
+                case 1: ToggleItalic();        break;
+                case 2: ToggleUnderline();     break;
+                case 3: ToggleStrikethrough(); break;
+                default: break;
+            }
+            break;
+
+        case 3: // Search
             switch (itemIdx)
             {
                 case 0: StartFindPrompt(); break;
@@ -1863,7 +1932,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             }
             break;
 
-        case 4: // Page
+        case 5: // Page
             switch (itemIdx)
             {
                 case 0: OpenMarginsDialog(); break; // Margins...
@@ -1871,7 +1940,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             }
             break;
 
-        case 5: // Tools
+        case 6: // Tools
             switch (itemIdx)
             {
                 case 0: OpenAddWordDialog();    break;
@@ -1881,7 +1950,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             }
             break;
 
-        case 6: // Options
+        case 7: // Options
             switch (itemIdx)
             {
                 case 0: OpenFontDialog();  break;   // Font...
@@ -1893,7 +1962,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             }
             break;
 
-        case 7: // Help
+        case 8: // Help
             switch (itemIdx)
             {
                 case 0: m_promptMode = PromptMode::HelpScreen;  break;
@@ -2013,7 +2082,8 @@ void Application::ResolveConfirmYes()
                 m_exitAfterSave = true;
                 StartSaveAsPrompt();
             }
-            else if (m_document->Save())
+            else if (m_document->Save(m_fontSettings.face,
+                                      FontSizePoints(m_fontSettings.size)))
             {
                 WriteSidecarForCurrentDocument();
                 UpdateWindowTitle();
@@ -2034,6 +2104,19 @@ void Application::ResolveConfirmYes()
             SetWordWrap(true);
             WriteSidecarForCurrentDocument();
             break;
+        case PromptMode::ConfirmSaveAsRtf:
+        {
+            // Y → Save As .rtf. Prefill with the current basename + .rtf
+            // so the user can just hit Enter to accept the new path.
+            std::string prefill = m_document->Filename();
+            auto dot = prefill.find_last_of('.');
+            if (dot != std::string::npos) prefill.resize(dot);
+            prefill += ".rtf";
+            m_promptText = std::move(prefill);
+            m_promptMode = PromptMode::SaveAs;
+            m_statusMessage.clear();
+            break;
+        }
         default:
             break;
     }
@@ -2055,6 +2138,23 @@ void Application::ResolveConfirmNo()
         case PromptMode::ConfirmWordWrap:
             SetWordWrap(false);
             WriteSidecarForCurrentDocument();
+            break;
+        case PromptMode::ConfirmSaveAsRtf:
+            // N → drop formatting and save as the original .txt path. The
+            // user accepted the warning; flatten the in-memory styles so
+            // the next save round-trips correctly.
+            m_document->Buffer().FlattenAllStyles();
+            if (m_document->Save(m_fontSettings.face,
+                                 FontSizePoints(m_fontSettings.size)))
+            {
+                WriteSidecarForCurrentDocument();
+                m_statusMessage = "Saved as plain text (formatting discarded).";
+                UpdateWindowTitle();
+            }
+            else
+            {
+                m_statusMessage = "Error: could not save file";
+            }
             break;
         default:
             break;
@@ -2365,7 +2465,7 @@ void Application::ClosePrintDialog(bool commit)
     // Repaint so the user sees "Printing..." while the synchronous job runs.
     Render();
 
-    m_statusMessage = PrintDocument(m_document->Buffer(), m_printRequest);
+    m_statusMessage = PrintDocument(m_document->Buffer().Text(), m_printRequest);
 }
 
 void Application::PrintCycleField(int dir)
@@ -2458,6 +2558,38 @@ void Application::PrintBackspace()
     }
     if (target && !target->empty()) target->pop_back();
 }
+
+// ---------------------------------------------------------------------------
+// Per-character formatting (Format menu / Ctrl+B / Ctrl+I / Ctrl+U)
+// ---------------------------------------------------------------------------
+
+void Application::ApplyStyleAction(uint8_t bit)
+{
+    if (bit == 0) return;
+
+    if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
+    {
+        int sr, sc, er, ec;
+        m_selection.GetRange(m_cursor.row, m_cursor.column, sr, sc, er, ec);
+        PushUndoBeforeEdit();
+        bool allOn = m_document->Buffer().AllInRangeHaveStyle(sr, sc, er, ec, bit);
+        m_document->Buffer().SetStyleInRange(sr, sc, er, ec, bit, !allOn);
+        m_document->MarkDirty();
+        UpdateWindowTitle();
+    }
+    else
+    {
+        // No selection: toggle the bit for next-typed input. No undo entry —
+        // this changes editor intent, not document content.
+        m_currentStyle ^= bit;
+    }
+    m_lastActionWasInsert = false;
+}
+
+void Application::ToggleBold()          { ApplyStyleAction(CharStyle::Bold); }
+void Application::ToggleItalic()        { ApplyStyleAction(CharStyle::Italic); }
+void Application::ToggleUnderline()     { ApplyStyleAction(CharStyle::Underline); }
+void Application::ToggleStrikethrough() { ApplyStyleAction(CharStyle::Strikethrough); }
 
 // ---------------------------------------------------------------------------
 // WYSIWYG mode + Margins dialog
@@ -2678,12 +2810,13 @@ void Application::Render()
     m_screenBuffer->Clear(fill);
 
     EditorUiState uiState;
-    uiState.textBuffer    = &m_document->Buffer();
+    uiState.textBuffer    = &m_document->Buffer().Text();
     uiState.viewportTop   = m_viewportTop;
     uiState.viewportLeft  = m_viewportLeft;
     uiState.filename      = m_document->DisplayName();
     uiState.dirty         = m_document->IsDirty();
     uiState.statusMessage = m_statusMessage;
+    uiState.currentStyle  = m_currentStyle;
 
     // Modal dialog overlay for prompts and confirmations (replaces the old
     // bottom-of-screen prompt). Active only for text/confirm modes.
@@ -2694,13 +2827,15 @@ void Application::Render()
                             m_promptMode == PromptMode::ConfirmExitClean ||
                             m_promptMode == PromptMode::ConfirmNew       ||
                             m_promptMode == PromptMode::ConfirmWordWrap  ||
+                            m_promptMode == PromptMode::ConfirmSaveAsRtf ||
                             m_promptMode == PromptMode::AddWordDialog    ||
                             m_promptMode == PromptMode::RemoveWordDialog ||
                             m_promptMode == PromptMode::CheckWordDialog);
-    uiState.dialogIsConfirm = (m_promptMode == PromptMode::ConfirmExit      ||
-                               m_promptMode == PromptMode::ConfirmExitClean ||
-                               m_promptMode == PromptMode::ConfirmNew       ||
-                               m_promptMode == PromptMode::ConfirmWordWrap);
+    uiState.dialogIsConfirm = (m_promptMode == PromptMode::ConfirmExit         ||
+                               m_promptMode == PromptMode::ConfirmExitClean    ||
+                               m_promptMode == PromptMode::ConfirmNew          ||
+                               m_promptMode == PromptMode::ConfirmWordWrap     ||
+                               m_promptMode == PromptMode::ConfirmSaveAsRtf);
     uiState.dialogInput         = m_promptText;
     uiState.dialogCursorVisible = m_cursor.visible;
     uiState.dialogHint.clear();
@@ -2744,6 +2879,12 @@ void Application::Render()
                                   + (m_wordWrap ? "ON." : "OFF.");
             uiState.dialogPrompt2 = "Turn it on or off?";
             uiState.dialogHint    = "[Y] On      [N] Off      [Esc] Cancel";
+            break;
+        case PromptMode::ConfirmSaveAsRtf:
+            uiState.dialogTitle   = "Save Formatted Document";
+            uiState.dialogPrompt  = "This document has formatting that .txt can't hold.";
+            uiState.dialogPrompt2 = "Save as .rtf to preserve it?";
+            uiState.dialogHint    = "[Y] Save .rtf  [N] Save .txt  [Esc] Cancel";
             break;
         case PromptMode::AddWordDialog:
             uiState.dialogTitle   = "Add to Dictionary";
@@ -2803,7 +2944,7 @@ void Application::Render()
     uiState.showWordCount         = m_showWordCount;
     uiState.wordCountDialogActive = (m_promptMode == PromptMode::WordCountDialog);
     uiState.wordCount             = (m_showWordCount || uiState.wordCountDialogActive)
-                                    ? CountWords(m_document->Buffer())
+                                    ? CountWords(m_document->Buffer().Text())
                                     : 0;
 
     // Spell check
@@ -2916,7 +3057,8 @@ void Application::Render()
         const int dpi = 72;
 
         WysiwygRenderer::DrawContext ctx{};
-        ctx.buffer         = &m_document->Buffer();
+        ctx.buffer         = &m_document->Buffer().Text();
+        ctx.formatted      = &m_document->Buffer();
         ctx.cursorRow      = m_cursor.row;
         ctx.cursorCol      = m_cursor.column;
         ctx.cursorVisible  = m_cursor.visible;
