@@ -30,6 +30,7 @@ add_executable(RetroEdit
     src/render/ScreenBuffer.cpp
     src/render/RetroRenderer.cpp
     src/render/GlyphCache.cpp
+    src/render/WysiwygRenderer.cpp
     src/ui/RetroUi.cpp
     src/editor/TextBuffer.cpp
     src/editor/FileDocument.cpp

@@ -110,3 +110,33 @@ void GlyphCache::DrawGlyph(char32_t codepoint, int x, int y, Color tint)
     };
     SDL_RenderTexture(m_renderer, tex, nullptr, &dst);
 }
+
+int GlyphCache::GlyphAdvance(char32_t codepoint) const
+{
+    if (!m_font) return 0;
+    int minx, maxx, miny, maxy, advance;
+    if (TTF_GetGlyphMetrics(m_font, codepoint, &minx, &maxx, &miny, &maxy, &advance))
+        return advance;
+    return m_cellWidth; // safe fallback (monospace assumption)
+}
+
+void GlyphCache::DrawGlyphAt(char32_t codepoint, int x, int y, Color tint)
+{
+    if (!m_font) return;
+    if (codepoint <= U' ') return;
+
+    int gw = 0, gh = 0;
+    SDL_Texture* tex = GlyphTexture(codepoint, gw, gh);
+    if (!tex) return;
+
+    SDL_SetTextureColorMod(tex, tint.r, tint.g, tint.b);
+    SDL_SetTextureAlphaMod(tex, tint.a);
+
+    SDL_FRect dst{
+        static_cast<float>(x),
+        static_cast<float>(y),
+        static_cast<float>(gw),
+        static_cast<float>(gh)
+    };
+    SDL_RenderTexture(m_renderer, tex, nullptr, &dst);
+}

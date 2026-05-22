@@ -17,10 +17,10 @@ struct MenuDef
 
 // Menu mnemonic characters (Alt+letter to open each menu)
 // Indices match GetMenuDefs() order:
-// File=0, Edit=1, Search=2, View=3, Run=4, Tools=5, Options=6, Help=7
+// File=0, Edit=1, Search=2, View=3, Page=4, Tools=5, Options=6, Help=7
 inline char GetMenuMnemonic(int menuIdx)
 {
-    static const char mnemonics[] = { 'f', 'e', 's', 'v', 'r', 't', 'o', 'h' };
+    static const char mnemonics[] = { 'f', 'e', 's', 'v', 'p', 't', 'o', 'h' };
     if (menuIdx < 0 || menuIdx >= static_cast<int>(sizeof(mnemonics)))
         return '\0';
     return mnemonics[menuIdx];
@@ -56,23 +56,24 @@ inline const std::vector<MenuDef>& GetMenuDefs()
         { "View", 21, {
             { "(coming soon)", "" },
         }},
-        { "Run", 27, {
-            { "(coming soon)", "" },
+        { "Page", 27, {
+            { "WYSIWYG",     ""  },   // shortcut column shows On/Off at draw time
+            { "Margins...",  ""  },
         }},
-        { "Tools", 32, {
+        { "Tools", 33, {
             { "Add to Dictionary...",      "" },
             { "Remove from Dictionary...", "" },
             { "",                          "" },
             { "Check Word...",             "" },
         }},
-        { "Options", 39, {
+        { "Options", 40, {
             { "Font...",              ""     },
             { "Word Wrap",            ""     },   // shortcut column shows On/Off at draw time
             { "Word Count",           ""     },   // shortcut column shows On/Off at draw time
             { "Spell Check",          ""     },   // shortcut column shows On/Off at draw time
             { "Highlight Misspelled", ""     },   // shortcut column shows On/Off at draw time
         }},
-        { "Help", 48, {
+        { "Help", 49, {
             { "Help",         "F1"   },
             { "",             ""     },
             { "About...",     ""     },

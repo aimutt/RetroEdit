@@ -42,4 +42,28 @@ inline const char* FontFaceName(FontFace face)
     }
 }
 
+// Windows GDI family name (for CreateFont). Distinct from FontFaceName
+// which may include user-facing decoration like " (CRT)".
+inline const char* FontFaceFamily(FontFace face)
+{
+    switch (face)
+    {
+        case FontFace::CascadiaMono:        return "Cascadia Mono";
+        case FontFace::CascadiaMonoBold:    return "Cascadia Mono";
+        case FontFace::JetBrainsMono:       return "JetBrains Mono";
+        case FontFace::JetBrainsMonoBold:   return "JetBrains Mono";
+        case FontFace::IBMPlexMono:         return "IBM Plex Mono";
+        case FontFace::IBMPlexMonoBold:     return "IBM Plex Mono";
+        case FontFace::VT323:               return "VT323";
+        default:                            return "Cascadia Mono";
+    }
+}
+
+inline bool FontFaceIsBold(FontFace face)
+{
+    return face == FontFace::CascadiaMonoBold
+        || face == FontFace::JetBrainsMonoBold
+        || face == FontFace::IBMPlexMonoBold;
+}
+
 inline int FontFaceCount() { return static_cast<int>(FontFace::Count_); }

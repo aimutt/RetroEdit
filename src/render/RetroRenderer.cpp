@@ -28,16 +28,18 @@ int RetroRenderer::CellHeight() const
 
 void RetroRenderer::Render(const ScreenBuffer& buffer)
 {
+    PaintBuffer(buffer);
+    Present();
+}
+
+void RetroRenderer::PaintBuffer(const ScreenBuffer& buffer)
+{
     SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
     SDL_RenderClear(m_renderer);
 
     const int cw = CellWidth();
     const int ch = CellHeight();
-    if (cw <= 0 || ch <= 0)
-    {
-        SDL_RenderPresent(m_renderer);
-        return;
-    }
+    if (cw <= 0 || ch <= 0) return;
 
     // Pass 1: cell backgrounds
     for (int row = 0; row < buffer.Rows(); ++row)
@@ -73,6 +75,9 @@ void RetroRenderer::Render(const ScreenBuffer& buffer)
             }
         }
     }
+}
 
+void RetroRenderer::Present()
+{
     SDL_RenderPresent(m_renderer);
 }

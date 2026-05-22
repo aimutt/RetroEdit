@@ -30,6 +30,17 @@ public:
     // (x, y) in window pixels. No-ops on glyphs we can't render.
     void DrawGlyph(char32_t codepoint, int x, int y, Color tint);
 
+    // Proportional layout support (used by WysiwygRenderer). LineHeight is the
+    // vertical advance between baselines; GlyphAdvance is the horizontal
+    // advance for a single glyph (uniform for monospace, varies for
+    // proportional fonts).
+    int LineHeight()                       const { return m_cellHeight; }
+    int GlyphAdvance(char32_t codepoint)   const;
+
+    // Draws a glyph at exact pixel position (no centering). For proportional
+    // rendering — caller has already computed x via summed glyph advances.
+    void DrawGlyphAt(char32_t codepoint, int x, int y, Color tint);
+
 private:
     SDL_Texture* GlyphTexture(char32_t codepoint, int& outWidth, int& outHeight);
 
