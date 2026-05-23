@@ -297,6 +297,14 @@ void FormattedTextBuffer::SetSizeInRange(int startRow, int startCol,
                      [sizeIdx](CharFormat& f) { f.size = sizeIdx; });
 }
 
+void FormattedTextBuffer::SetColorInRange(int startRow, int startCol,
+                                          int endRow,   int endCol,
+                                          uint8_t colorIdx)
+{
+    ApplyAcrossRange(m_formats, m_text, startRow, startCol, endRow, endCol,
+                     [colorIdx](CharFormat& f) { f.color = colorIdx; });
+}
+
 void FormattedTextBuffer::FlattenAllStyles()
 {
     for (auto& row : m_formats)

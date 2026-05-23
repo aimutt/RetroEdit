@@ -34,6 +34,7 @@ enum class PromptMode
     HelpScreen,     // F1 help overlay
     AboutScreen,    // About dialog
     FontDialog,     // Font picker
+    ThemeDialog,    // Theme picker (Options > Theme...)
     ConfirmWordWrap,// Y = wrap on, N = wrap off, Esc = cancel
     WordCountDialog,// shows live word count + status-bar toggle checkbox
     AddWordDialog,  // text input -> Dictionary::AddWord
@@ -149,6 +150,10 @@ private:
     void OpenFontDialog();
     void ApplyFontSettings(const FontSettings& settings);
 
+    // Theme picker
+    void OpenThemeDialog();
+    void ApplyThemeDialogSelection();      // commits m_themeDialogFocusIdx
+
     // Word wrap
     void OpenWordWrapDialog();
     void SetWordWrap(bool on);
@@ -178,6 +183,9 @@ private:
     // Global app settings (persisted under %LOCALAPPDATA%\RetroEdit\)
     void LoadGlobalSettings();
     void SaveGlobalSettings();
+    // Theme switching: updates m_themeName, rebuilds m_theme, redraws, and
+    // persists the choice to config.ini. No-op when name == current.
+    void ApplyTheme(ThemeName name);
 
     // Per-file settings sidecar (FileSettings). Add new persisted settings
     // by extending the two Capture/Apply helpers — the I/O paths above and
@@ -216,6 +224,9 @@ private:
     int          m_fontDialogSizeIdx     = 0;
     int          m_fontDialogFocusColumn = 0;   // 0 = face, 1 = size
 
+    // Theme picker (Options > Theme...)
+    int          m_themeDialogFocusIdx = 0;
+
     // Cached window pixel dimensions and screen-buffer dimensions —
     // recomputed when the window is resized or the font changes.
     int          m_windowWidth           = 0;
@@ -245,6 +256,7 @@ private:
     std::string              m_printMarginText[4]; // top, bottom, left, right
 
     Layout                          m_layout;
+    ThemeName                       m_themeName = ThemeName::Green;
     Theme                           m_theme;
     std::unique_ptr<Window>         m_window;
     std::unique_ptr<ScreenBuffer>   m_screenBuffer;

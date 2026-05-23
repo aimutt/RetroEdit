@@ -33,6 +33,10 @@ struct CharFormat
     uint8_t style = 0;            // CharStyle bits
     uint8_t face  = Inherit;      // FontFace enum index, or Inherit
     uint8_t size  = Inherit;      // FontSize enum index, or Inherit
+    uint8_t color = Inherit;      // Palette index (0..15), or Inherit
 
-    bool IsPlain() const { return style == 0 && face == Inherit && size == Inherit; }
+    bool IsPlain() const
+    {
+        return style == 0 && face == Inherit && size == Inherit && color == Inherit;
+    }
 };

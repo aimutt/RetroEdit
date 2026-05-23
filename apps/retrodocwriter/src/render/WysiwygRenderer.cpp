@@ -2,6 +2,7 @@
 #include "render/GlyphCache.h"
 #include "render/FontSettings.h"
 #include "editor/CharStyle.h"
+#include "editor/Palette.h"
 #include "editor/TextBuffer.h"
 #include "editor/FormattedTextBuffer.h"
 #include "platform/AssetPath.h"
@@ -43,6 +44,14 @@ namespace
         if (f.size == CharFormat::Inherit) return defaultPointSize;
         if (f.size >= 4) return defaultPointSize; // FontSize enum has 4 values
         return FontSizePoints(FontSizeAt(static_cast<int>(f.size)));
+    }
+    // Per-char foreground color. Inherit-sentinel falls back to the theme's
+    // normal-text color so unstyled text reflows visually when the theme
+    // changes; explicitly-colored chars stay pinned to their palette entry.
+    inline Color ResolveColor(const CharFormat& f, Color themeNormal) {
+        if (f.color == CharFormat::Inherit) return themeNormal;
+        if (f.color >= Palette::kCount)     return themeNormal;
+        return Palette::ColorAt(f.color);
     }
 }
 
@@ -89,6 +98,7 @@ namespace
         int         lineHeight;  // px (LineHeight of the cache used)
         GlyphCache* cache;
         uint8_t     style;
+        Color       color;       // resolved per-char foreground (theme default if Inherit)
     };
 
     // Per-segment metadata after pixel-based wrap. `startCol` is the
@@ -231,6 +241,7 @@ static void BuildLayoutPass(LayoutPass& out,
                             const TextBuffer& buf,
                             const FormattedTextBuffer* fmt,
                             FontFace defaultFace, int defaultPointSize,
+                            Color themeNormalText,
                             int usableW,
                             std::function<GlyphCache*(FontFace, int)> cacheFor)
 {
@@ -260,6 +271,7 @@ static void BuildLayoutPass(LayoutPass& out,
             cr.cache       = cache;
             cr.advance     = cache ? cache->GlyphAdvance(cp, f.style) : ptSz / 2;
             cr.lineHeight  = cache ? cache->LineHeight() : ptSz;
+            cr.color       = ResolveColor(f, themeNormalText);
             out.chars[li].push_back(cr);
         }
         out.segments[li] = WrapLinePixels(out.chars[li], usableW, out.defaultLineHeight);
@@ -287,7 +299,7 @@ int WysiwygRenderer::ClampScrollForCursor(const DrawContext& ctx)
     const int pageStride = pageH + kPageGapPx;
 
     BuildLayoutPass(pass, *ctx.buffer, ctx.formatted,
-                    ctx.face, ctx.pointSize, usableW,
+                    ctx.face, ctx.pointSize, m_theme.normalText, usableW,
                     [&](FontFace f, int p) { return CacheFor(f, p, dpi); });
 
     int row = std::clamp(ctx.cursorRow, 0, std::max(0, ctx.buffer->LineCount() - 1));
@@ -364,7 +376,7 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
 
     LayoutPass pass;
     BuildLayoutPass(pass, *ctx.buffer, ctx.formatted,
-                    ctx.face, ctx.pointSize, usableW,
+                    ctx.face, ctx.pointSize, m_theme.normalText, usableW,
                     [&](FontFace f, int p) { return CacheFor(f, p, dpi); });
 
     int pageX = ctx.editorAreaPxX + (ctx.editorAreaPxW - pageW) / 2;
@@ -483,7 +495,9 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
                 const CharRender& cr = chars[c];
                 char32_t cp = static_cast<char32_t>(static_cast<unsigned char>(cr.ch));
 
-                Color fg = m_theme.normalText;
+                // Per-char foreground: from CharFormat.color (or theme
+                // default when Inherit). Selection's reverse-video wins.
+                Color fg = cr.color;
                 if (ctx.selActive)
                 {
                     int colLo = (li == sr) ? sc : 0;

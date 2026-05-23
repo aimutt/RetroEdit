@@ -64,6 +64,7 @@ inline const std::vector<MenuDef>& GetMenuDefs()
         }},
         { "Options", 34, {
             { "Font...",              ""     },
+            { "Theme...",             ""     },
             { "Word Wrap",            ""     },   // shortcut column shows On/Off at draw time
             { "Word Count",           ""     },   // shortcut column shows On/Off at draw time
             { "Spell Check",          ""     },   // shortcut column shows On/Off at draw time

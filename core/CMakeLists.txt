@@ -6,9 +6,11 @@ add_library(RetroCore STATIC
     render/GlyphCache.cpp
     render/RetroRenderer.cpp
     render/ScreenBuffer.cpp
+    render/Theme.cpp
     editor/Dictionary.cpp
     editor/Dictionary.gen.cpp
     editor/FileDocument.cpp
+    editor/Palette.cpp
     editor/FileSettings.cpp
     editor/TextBuffer.cpp
     editor/UndoHistory.cpp

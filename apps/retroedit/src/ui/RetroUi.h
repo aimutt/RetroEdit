@@ -51,6 +51,11 @@ struct EditorUiState
     int  fontDialogActiveFace  = 0;   // currently-applied face index
     int  fontDialogActiveSize  = 0;   // currently-applied size index
 
+    // Theme picker (Options > Theme...)
+    bool themeDialogActive   = false;
+    int  themeDialogFocusIdx = 0;     // highlighted row
+    int  themeDialogActiveIdx = 0;    // currently-applied theme
+
     // Editor options
     bool wordWrap = false;
 
@@ -134,6 +139,12 @@ public:
     FontDialogClick HitTestFontDialog(int cellCol, int cellRow, int screenColumns,
                                        int faceCount, int sizeCount) const;
 
+    Rect ThemeDialogRect(int screenColumns, int themeCount) const;
+    enum class ThemeHit { None, Row, OkHint, CancelHint };
+    struct ThemeDialogClick { ThemeHit hit = ThemeHit::None; int index = -1; };
+    ThemeDialogClick HitTestThemeDialog(int cellCol, int cellRow, int screenColumns,
+                                         int themeCount) const;
+
     enum class ConfirmHit { None, Yes, No, Cancel };
     ConfirmHit HitTestConfirmDialog(int cellCol, int cellRow, int screenColumns,
                                      const std::string& hint) const;
@@ -174,6 +185,7 @@ private:
                            const std::string& line1, const std::string& line2,
                            const std::string& hint);
     void DrawFontDialog(ScreenBuffer& buffer, const EditorUiState& state);
+    void DrawThemeDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawFindDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawWordCountDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawPrintDialog(ScreenBuffer& buffer, const EditorUiState& state);

@@ -1,5 +1,6 @@
 #include "RetroUi.h"
 #include "app/Cursor.h"
+#include "editor/Palette.h"
 #include "editor/Selection.h"
 #include "editor/WordWrap.h"
 #include "render/FontSettings.h"
@@ -38,6 +39,12 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
 
     if (state.showFontDialog)
         DrawFontDialog(buffer, state);
+
+    if (state.themeDialogActive)
+        DrawThemeDialog(buffer, state);
+
+    if (state.colorDialogActive)
+        DrawColorDialog(buffer, state);
 
     if (state.wordCountDialogActive)
         DrawWordCountDialog(buffer, state);
@@ -337,10 +344,12 @@ namespace
     {
         (void)wysiwygEnabled; // RetroDocWriter is always WYSIWYG; no toggle item.
         // Options is menu idx 7 in RetroDocWriter (after Format was inserted at 2).
-        if (menuIdx == 7 && itemIdx == 1) return wordWrap            ? "On" : "Off";
-        if (menuIdx == 7 && itemIdx == 2) return showWordCount       ? "On" : "Off";
-        if (menuIdx == 7 && itemIdx == 3) return spellCheckEnabled   ? "On" : "Off";
-        if (menuIdx == 7 && itemIdx == 4) return highlightMisspelled ? "On" : "Off";
+        // Options menu (menuIdx 7) after Theme... inserted at item 1:
+        // 0=Font, 1=Theme, 2=WordWrap, 3=WordCount, 4=Spell, 5=Highlight.
+        if (menuIdx == 7 && itemIdx == 2) return wordWrap            ? "On" : "Off";
+        if (menuIdx == 7 && itemIdx == 3) return showWordCount       ? "On" : "Off";
+        if (menuIdx == 7 && itemIdx == 4) return spellCheckEnabled   ? "On" : "Off";
+        if (menuIdx == 7 && itemIdx == 5) return highlightMisspelled ? "On" : "Off";
         return item.shortcut;
     }
 
@@ -601,6 +610,24 @@ RetroUi::Rect RetroUi::FontDialogRect(int screenColumns, int faceCount, int size
 {
     int listRows = std::max(faceCount, sizeCount);
     return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, 60, listRows + 5);
+}
+
+RetroUi::Rect RetroUi::ThemeDialogRect(int screenColumns, int themeCount) const
+{
+    constexpr int kInnerW = 34;
+    int outerWidth  = kInnerW + 2;
+    int outerHeight = themeCount + 5;
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, outerWidth, outerHeight);
+}
+
+RetroUi::Rect RetroUi::ColorDialogRect(int screenColumns) const
+{
+    // 4x4 grid of swatches, each 5 cells wide x 1 cell tall, with 1-cell
+    // horizontal gaps. Width = 4*5 + 3*1 + 2 borders + 2 padding = 27.
+    // Height = title row + blank + 4 grid rows + blank + hint + bottom = 9.
+    constexpr int kOuterW = 28;
+    constexpr int kOuterH = 9;
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, kOuterW, kOuterH);
 }
 
 RetroUi::Rect RetroUi::HelpScreenRect(int screenColumns) const
@@ -1552,4 +1579,193 @@ void RetroUi::DrawFontDialog(ScreenBuffer& buffer, const EditorUiState& state)
     {
         // there's a blank line between the lists and the hint
     }
+}
+
+// ---------------------------------------------------------------------------
+// Theme picker dialog
+// ---------------------------------------------------------------------------
+
+void RetroUi::DrawThemeDialog(ScreenBuffer& buffer, const EditorUiState& state)
+{
+    const int themeCount = ThemeCount();
+    Rect r = ThemeDialogRect(buffer.Columns(), themeCount);
+    const int x = r.x, y = r.y;
+    const int outerWidth  = r.w;
+    const int outerHeight = r.h;
+
+    Color fg     = m_theme.normalText;
+    Color bg     = m_theme.background;
+    Color bright = m_theme.brightText;
+    Color dim    = m_theme.dimText;
+
+    DrawBox(buffer, x, y, outerWidth, outerHeight, fg, bg);
+
+    const char* title = " Select Theme ";
+    int titleX = x + (outerWidth - static_cast<int>(std::strlen(title))) / 2;
+    buffer.WriteText(titleX, y, title, bright, bg);
+
+    const int innerW = outerWidth - 2;
+    for (int i = 0; i < themeCount; ++i)
+    {
+        int rowY = y + 2 + i;
+        bool focused = (i == state.themeDialogFocusIdx);
+        Color rowFg = focused ? m_theme.reverseForeground
+                              : (i == state.themeDialogActiveIdx ? bright : fg);
+        Color rowBg = focused ? m_theme.reverseBackground : bg;
+
+        for (int c = 0; c < innerW; ++c)
+            buffer.PutChar(x + 1 + c, rowY, U' ', rowFg, rowBg);
+
+        std::string label = " ";
+        label += ThemeDisplayName(static_cast<ThemeName>(i));
+        if (i == state.themeDialogActiveIdx) label += " *";
+        if (static_cast<int>(label.size()) > innerW) label.resize(innerW);
+        buffer.WriteText(x + 1, rowY, label, rowFg, rowBg);
+    }
+
+    const char* hint = "[Up/Down] Move  [Enter] Apply  [Esc] Cancel";
+    int hintLen = static_cast<int>(std::strlen(hint));
+    int hintX = x + (outerWidth - hintLen) / 2;
+    if (hintX < x + 1) hintX = x + 1;
+    buffer.WriteText(hintX, y + outerHeight - 2, hint, dim, bg);
+}
+
+RetroUi::ThemeDialogClick RetroUi::HitTestThemeDialog(int cellCol, int cellRow,
+                                                      int screenColumns,
+                                                      int themeCount) const
+{
+    Rect r = ThemeDialogRect(screenColumns, themeCount);
+    ThemeDialogClick out;
+    if (!r.Contains(cellCol, cellRow)) return out;
+
+    int relRow = cellRow - r.y;
+    if (relRow >= 2 && relRow < 2 + themeCount)
+    {
+        out.hit   = ThemeHit::Row;
+        out.index = relRow - 2;
+        return out;
+    }
+    if (relRow == r.h - 2)
+    {
+        std::string tok = TokenAt("[Enter] Apply  [Esc] Cancel", r.x, cellCol);
+        if (tok == "ENTER") out.hit = ThemeHit::OkHint;
+        else if (tok == "ESC") out.hit = ThemeHit::CancelHint;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Text color picker dialog
+// ---------------------------------------------------------------------------
+//
+// 4x4 grid of palette swatches. Each swatch is 5 cells wide x 1 cell tall,
+// painted in the palette color with the swatch's index drawn in contrasting
+// text. Focused swatch gets a bright border on the row above the grid.
+
+namespace
+{
+    constexpr int kColorGridCols = 4;
+    constexpr int kColorGridRows = 4;
+    constexpr int kColorSwatchW  = 5;
+    constexpr int kColorSwatchGap = 1;
+    constexpr int kColorGridTopRow = 2;   // first swatch row inside dialog
+}
+
+void RetroUi::DrawColorDialog(ScreenBuffer& buffer, const EditorUiState& state)
+{
+    Rect r = ColorDialogRect(buffer.Columns());
+    const int x = r.x, y = r.y;
+    const int outerW = r.w, outerH = r.h;
+
+    Color fg     = m_theme.normalText;
+    Color bg     = m_theme.background;
+    Color bright = m_theme.brightText;
+    Color dim    = m_theme.dimText;
+
+    DrawBox(buffer, x, y, outerW, outerH, fg, bg);
+
+    const char* title = " Text Color ";
+    int titleX = x + (outerW - static_cast<int>(std::strlen(title))) / 2;
+    buffer.WriteText(titleX, y, title, bright, bg);
+
+    const int gridX0 = x + 1;
+    for (int row = 0; row < kColorGridRows; ++row)
+    {
+        for (int col = 0; col < kColorGridCols; ++col)
+        {
+            int idx = row * kColorGridCols + col;
+            if (idx >= Palette::kCount) break;
+            int sx = gridX0 + col * (kColorSwatchW + kColorSwatchGap);
+            int sy = y + kColorGridTopRow + row;
+            Color sw = Palette::ColorAt(static_cast<uint8_t>(idx));
+            // Draw swatch background.
+            for (int c = 0; c < kColorSwatchW; ++c)
+                buffer.PutChar(sx + c, sy, U' ', sw, sw);
+            // Show index number centred on the swatch in a contrasting color.
+            // (Light backgrounds → black text; dark → white text.)
+            int brightness = static_cast<int>(sw.r) + sw.g + sw.b;
+            Color label = (brightness > 380)
+                            ? Color{0, 0, 0, 255}
+                            : Color{255, 255, 255, 255};
+            char numbuf[4];
+            std::snprintf(numbuf, sizeof(numbuf), "%2d", idx);
+            buffer.WriteText(sx + 1, sy, numbuf, label, sw);
+            // Focus outline on the right side of the focused swatch.
+            if (idx == state.colorDialogFocusIdx)
+            {
+                buffer.PutChar(sx + kColorSwatchW - 1, sy, U'<', bright, sw);
+                buffer.PutChar(sx,                     sy, U'>', bright, sw);
+            }
+            else if (idx == state.colorDialogCurrent)
+            {
+                buffer.PutChar(sx, sy, U'*', label, sw);
+            }
+        }
+    }
+
+    const char* hint = "[Arrows] Move  [Enter] Apply  [Esc] Cancel";
+    int hintLen = static_cast<int>(std::strlen(hint));
+    int hintX = x + (outerW - hintLen) / 2;
+    if (hintX < x + 1) hintX = x + 1;
+    buffer.WriteText(hintX, y + outerH - 2, hint, dim, bg);
+}
+
+RetroUi::ColorDialogClick RetroUi::HitTestColorDialog(int cellCol, int cellRow,
+                                                      int screenColumns) const
+{
+    Rect r = ColorDialogRect(screenColumns);
+    ColorDialogClick out;
+    if (!r.Contains(cellCol, cellRow)) return out;
+
+    int relRow = cellRow - r.y;
+    int relCol = cellCol - r.x;
+
+    if (relRow >= kColorGridTopRow && relRow < kColorGridTopRow + kColorGridRows)
+    {
+        int gridRow = relRow - kColorGridTopRow;
+        // Grid cells inside the box; first swatch starts at relCol 1.
+        int xWithin = relCol - 1;
+        if (xWithin >= 0)
+        {
+            int slot = xWithin / (kColorSwatchW + kColorSwatchGap);
+            int slotOffset = xWithin % (kColorSwatchW + kColorSwatchGap);
+            if (slot < kColorGridCols && slotOffset < kColorSwatchW)
+            {
+                int idx = gridRow * kColorGridCols + slot;
+                if (idx >= 0 && idx < Palette::kCount)
+                {
+                    out.hit   = ColorHit::Swatch;
+                    out.index = idx;
+                    return out;
+                }
+            }
+        }
+    }
+    if (relRow == r.h - 2)
+    {
+        std::string tok = TokenAt("[Enter] Apply  [Esc] Cancel", r.x, cellCol);
+        if (tok == "ENTER") out.hit = ColorHit::OkHint;
+        else if (tok == "ESC") out.hit = ColorHit::CancelHint;
+    }
+    return out;
 }
