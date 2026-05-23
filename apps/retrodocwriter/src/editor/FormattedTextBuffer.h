@@ -81,6 +81,9 @@ public:
     void SetSizeInRange (int startRow, int startCol,
                          int endRow,   int endCol,
                          uint8_t sizeIdx);
+    void SetColorInRange(int startRow, int startCol,
+                         int endRow,   int endCol,
+                         uint8_t colorIdx);
     // Zero out style and reset face/size to Inherit across the entire
     // buffer (used when "flatten and save as plain text").
     void FlattenAllStyles();

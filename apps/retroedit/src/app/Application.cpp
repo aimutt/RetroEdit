@@ -286,6 +286,31 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
         return;
     }
 
+    // Theme picker — single-column up/down list.
+    if (m_promptMode == PromptMode::ThemeDialog)
+    {
+        const int themeCount = ThemeCount();
+        switch (key.scancode)
+        {
+            case SDL_SCANCODE_UP:
+                if (m_themeDialogFocusIdx > 0) --m_themeDialogFocusIdx;
+                break;
+            case SDL_SCANCODE_DOWN:
+                if (m_themeDialogFocusIdx < themeCount - 1) ++m_themeDialogFocusIdx;
+                break;
+            case SDL_SCANCODE_RETURN:
+                ApplyThemeDialogSelection();
+                break;
+            case SDL_SCANCODE_ESCAPE:
+                m_promptMode    = PromptMode::None;
+                m_statusMessage = "Ready";
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
     // Text/confirmation prompts
     if (m_promptMode != PromptMode::None)
     {
@@ -800,6 +825,42 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
                 break;
             default:
                 break; // inside dialog but on dead area — no-op
+        }
+        return true;
+    }
+
+    // Theme picker
+    if (m_promptMode == PromptMode::ThemeDialog)
+    {
+        const int themeCount = ThemeCount();
+        auto rect = m_ui->ThemeDialogRect(m_screenColumns, themeCount);
+        if (!rect.Contains(cellCol, cellRow))
+        {
+            m_promptMode    = PromptMode::None;
+            m_statusMessage = "Ready";
+            m_needsRedraw   = true;
+            return true;
+        }
+        auto click = m_ui->HitTestThemeDialog(cellCol, cellRow, m_screenColumns,
+                                              themeCount);
+        switch (click.hit)
+        {
+            case RetroUi::ThemeHit::Row:
+                m_themeDialogFocusIdx = click.index;
+                ApplyThemeDialogSelection();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::ThemeHit::OkHint:
+                ApplyThemeDialogSelection();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::ThemeHit::CancelHint:
+                m_promptMode    = PromptMode::None;
+                m_statusMessage = "Ready";
+                m_needsRedraw   = true;
+                break;
+            default:
+                break;
         }
         return true;
     }
@@ -1807,10 +1868,11 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             switch (itemIdx)
             {
                 case 0: OpenFontDialog();  break;   // Font...
-                case 1: OpenWordWrapDialog(); break; // Word Wrap
-                case 2: OpenWordCountDialog(); break; // Word Count
-                case 3: ToggleSpellCheck(); break;
-                case 4: ToggleHighlightMisspelled(); break;
+                case 1: OpenThemeDialog(); break;   // Theme...
+                case 2: OpenWordWrapDialog(); break; // Word Wrap
+                case 3: OpenWordCountDialog(); break; // Word Count
+                case 4: ToggleSpellCheck(); break;
+                case 5: ToggleHighlightMisspelled(); break;
                 default: break;
             }
             break;
@@ -1917,6 +1979,27 @@ void Application::ApplyFontDialogSelection()
     {
         m_statusMessage = "Ready";
     }
+}
+
+void Application::OpenThemeDialog()
+{
+    m_promptMode          = PromptMode::ThemeDialog;
+    m_themeDialogFocusIdx = static_cast<int>(m_themeName);
+    m_statusMessage.clear();
+}
+
+void Application::ApplyThemeDialogSelection()
+{
+    int idx = std::clamp(m_themeDialogFocusIdx, 0, ThemeCount() - 1);
+    ThemeName chosen = static_cast<ThemeName>(idx);
+    m_promptMode = PromptMode::None;
+    if (chosen == m_themeName)
+    {
+        m_statusMessage = "Ready";
+        return;
+    }
+    ApplyTheme(chosen);
+    m_statusMessage = std::string("Theme: ") + ThemeDisplayName(chosen);
 }
 
 // Shared by the keyboard Y/N handlers and the mouse Yes/No clicks on confirm
@@ -2107,7 +2190,10 @@ void Application::LoadGlobalSettings()
             m_spellCheckEnabled = s.GetBool("spell_check");
         if (s.Has("highlight_misspelled"))
             m_highlightMisspelled = s.GetBool("highlight_misspelled");
+        if (s.Has("theme_name"))
+            m_themeName = ParseThemeName(s.GetString("theme_name"));
     }
+    m_theme = MakeTheme(m_themeName);
 
     m_dictionary.LoadUserOverlay(dir + "user_dictionary.txt");
 }
@@ -2118,9 +2204,21 @@ void Application::SaveGlobalSettings()
     if (dir.empty()) return;
 
     FileSettings s;
+    // Load first so any future keys round-trip through older code paths.
+    s.Load(dir + "config.ini");
     s.SetBool("spell_check",          m_spellCheckEnabled);
     s.SetBool("highlight_misspelled", m_highlightMisspelled);
+    s.SetString("theme_name",         ThemeNameKey(m_themeName));
     s.Save(dir + "config.ini");
+}
+
+void Application::ApplyTheme(ThemeName name)
+{
+    if (name == m_themeName) return;
+    m_themeName = name;
+    m_theme = MakeTheme(name);
+    m_needsRedraw = true;
+    SaveGlobalSettings();
 }
 
 // ---------------------------------------------------------------------------
@@ -2575,6 +2673,10 @@ void Application::Render()
     uiState.fontDialogFocusColumn = m_fontDialogFocusColumn;
     uiState.fontDialogActiveFace  = static_cast<int>(m_fontSettings.face);
     uiState.fontDialogActiveSize  = IndexOfFontSize(m_fontSettings.size);
+
+    uiState.themeDialogActive    = (m_promptMode == PromptMode::ThemeDialog);
+    uiState.themeDialogFocusIdx  = m_themeDialogFocusIdx;
+    uiState.themeDialogActiveIdx = static_cast<int>(m_themeName);
 
     // Editor options
     uiState.wordWrap = m_wordWrap;

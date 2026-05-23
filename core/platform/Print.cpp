@@ -1,4 +1,5 @@
 #include "Print.h"
+#include "editor/Palette.h"
 #include "editor/TextBuffer.h"
 #include "render/FontFace.h"
 #include "render/FontSettings.h"
@@ -112,11 +113,12 @@ namespace
 
     struct PrintChar
     {
-        char    ch;
-        HFONT   font;
-        int     advance;
-        int     lineHeight;
-        uint8_t style;
+        char     ch;
+        HFONT    font;
+        int      advance;
+        int      lineHeight;
+        uint8_t  style;
+        COLORREF color;   // RGB for SetTextColor; default = black
     };
 
     struct PrintSegment { int startCol; int endCol; int height; };
@@ -677,7 +679,18 @@ static std::string PrintDocumentFormatted(const TextBuffer& buffer,
                 GetTextExtentPoint32A(hdc, &ch, 1, &sz);
                 adv = sz.cx;
             }
-            chars[li].push_back({ ch, font, adv, lastLineHeight, f.style });
+            // Per-char foreground: explicit palette entry → its RGB; Inherit
+            // → black on paper regardless of screen theme. Selection isn't a
+            // concern in the print pipeline.
+            COLORREF cref;
+            if (f.color == CharFormat::Inherit || f.color >= Palette::kCount)
+                cref = RGB(0, 0, 0);
+            else
+            {
+                Color pc = Palette::ColorAt(f.color);
+                cref = RGB(pc.r, pc.g, pc.b);
+            }
+            chars[li].push_back({ ch, font, adv, lastLineHeight, f.style, cref });
         }
     }
 
@@ -766,15 +779,21 @@ static std::string PrintDocumentFormatted(const TextBuffer& buffer,
         const auto& lineChars = chars[ps.li];
         int x = usableLeft;
         int y = usableTop + ps.yInPage;
-        // Group consecutive chars by font for fewer SelectObject calls.
+        // Group consecutive chars by (font, color) for fewer SelectObject
+        // and SetTextColor calls. Both must match within a group so a single
+        // TextOutA renders the run with the right face/size/style/color.
         int groupStart = seg.startCol;
         while (groupStart < seg.endCol)
         {
-            HFONT groupFont = lineChars[groupStart].font;
+            HFONT    groupFont  = lineChars[groupStart].font;
+            COLORREF groupColor = lineChars[groupStart].color;
             int groupEnd = groupStart + 1;
-            while (groupEnd < seg.endCol && lineChars[groupEnd].font == groupFont)
+            while (groupEnd < seg.endCol
+                   && lineChars[groupEnd].font  == groupFont
+                   && lineChars[groupEnd].color == groupColor)
                 ++groupEnd;
             SelectObject(hdc, groupFont);
+            SetTextColor(hdc, groupColor);
             std::string text;
             text.reserve(static_cast<size_t>(groupEnd - groupStart));
             for (int c = groupStart; c < groupEnd; ++c)

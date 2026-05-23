@@ -1,6 +1,8 @@
 #include "RtfReader.h"
 #include "editor/CharStyle.h"
+#include "editor/Palette.h"
 #include "render/FontFace.h"
+#include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <sstream>
@@ -59,6 +61,15 @@ namespace
         // Body run state
         int curFaceIdx = -1;            // -1 = Inherit
         int curHalfPt  = 0;             // 0  = Inherit
+        int curColorIdx = -1;           // -1 = Inherit, else palette index
+
+        // Color table parsing — sibling of fonttbl with its own depth marker.
+        // readerColorMap maps RTF \cfN index → palette index (or -1 for the
+        // RTF "auto" sentinel that we treat as Inherit).
+        int colorTblOpenDepth = 0;
+        int colorR = 0, colorG = 0, colorB = 0;
+        bool colorEntryStarted = false;
+        std::vector<int> readerColorMap;
 
         Parser(const std::string& s, FormattedTextBuffer& o) : src(s), out(o)
         {
@@ -96,6 +107,14 @@ namespace
             return MapPointsToSizeIdx(curHalfPt / 2);
         }
 
+        // Resolve curColorIdx → CharFormat::color byte. -1 = Inherit.
+        uint8_t ResolveColorForEmit() const
+        {
+            if (curColorIdx < 0) return CharFormat::Inherit;
+            if (curColorIdx >= Palette::kCount) return CharFormat::Inherit;
+            return static_cast<uint8_t>(curColorIdx);
+        }
+
         void emitByte(unsigned char b)
         {
             if (skipping()) return;
@@ -115,6 +134,7 @@ namespace
                 f.style = curStyle;
                 f.face  = ResolveFaceForEmit();
                 f.size  = ResolveSizeForEmit();
+                f.color = ResolveColorForEmit();
                 formatRows.back().push_back(f);
             }
         }
@@ -155,7 +175,10 @@ namespace
 
         bool IsDestinationKeyword(const std::string& w) const
         {
-            return w == "fonttbl" || w == "filetbl" || w == "colortbl"
+            // Note: \colortbl is NOT in this list — it's handled specially
+            // so the parser can capture \red\green\blue triples instead of
+            // dropping the contents.
+            return w == "fonttbl" || w == "filetbl"
                 || w == "stylesheet" || w == "listtable" || w == "rsidtbl"
                 || w == "info" || w == "pict" || w == "header" || w == "footer"
                 || w == "headerl" || w == "headerr" || w == "footerl" || w == "footerr"
@@ -222,6 +245,35 @@ namespace
                 return;
             }
 
+            // Color table contents (\red, \green, \blue accumulate into a
+            // pending triple; the next ';' literal commits it).
+            if (colorTblOpenDepth > 0)
+            {
+                if (word == "red"   && hasParam) { colorR = param; colorEntryStarted = true; return; }
+                if (word == "green" && hasParam) { colorG = param; colorEntryStarted = true; return; }
+                if (word == "blue"  && hasParam) { colorB = param; colorEntryStarted = true; return; }
+            }
+
+            // \colortbl: start capturing palette entries. Unlike fonttbl we
+            // do NOT add skipFromDepth — we want the parser to process
+            // literal ';' inside the group as the entry-terminator.
+            if (word == "colortbl")
+            {
+                colorTblOpenDepth = braceDepth;
+                return;
+            }
+
+            // \cfN — switch active foreground for the body run. Index into
+            // readerColorMap (0 = auto = Inherit; 1+ = palette).
+            if (word == "cf" && hasParam && colorTblOpenDepth == 0)
+            {
+                if (param >= 0 && param < static_cast<int>(readerColorMap.size()))
+                    curColorIdx = readerColorMap[param];
+                else
+                    curColorIdx = -1;
+                return;
+            }
+
             if (IsDestinationKeyword(word))
             {
                 if (skipFromDepth == 0)
@@ -260,6 +312,46 @@ namespace
 
         void ParseOne()
         {
+            // While inside the \colortbl group, intercept literal bytes
+            // here so they don't reach the document body. ';' commits the
+            // current \red\green\blue triple (or an empty "auto" entry).
+            // '\', '{', '}' fall through so braces and control words still
+            // close / open the group correctly. Everything else (spaces,
+            // newlines) is silently dropped.
+            if (colorTblOpenDepth > 0 && pos < src.size())
+            {
+                char peek = src[pos];
+                if (peek == ';')
+                {
+                    if (colorEntryStarted)
+                    {
+                        Color rgb{
+                            static_cast<uint8_t>(std::clamp(colorR, 0, 255)),
+                            static_cast<uint8_t>(std::clamp(colorG, 0, 255)),
+                            static_cast<uint8_t>(std::clamp(colorB, 0, 255)),
+                            255
+                        };
+                        readerColorMap.push_back(
+                            static_cast<int>(Palette::NearestIndex(rgb)));
+                    }
+                    else
+                    {
+                        // Empty entry — RTF "auto" → Inherit in our model.
+                        readerColorMap.push_back(-1);
+                    }
+                    colorR = colorG = colorB = 0;
+                    colorEntryStarted = false;
+                    ++pos;
+                    return;
+                }
+                if (peek != '\\' && peek != '{' && peek != '}')
+                {
+                    ++pos;
+                    return;
+                }
+                // Fall through for \ { } so the parser still sees them.
+            }
+
             if (FeedFontTableCapture()) return;
 
             char ch = src[pos++];
@@ -275,6 +367,8 @@ namespace
                     skipFromDepth = 0;
                 if (fontTblOpenDepth > 0 && braceDepth == fontTblOpenDepth)
                     fontTblOpenDepth = 0;
+                if (colorTblOpenDepth > 0 && braceDepth == colorTblOpenDepth)
+                    colorTblOpenDepth = 0;
                 if (!styleStack.empty())
                 {
                     curStyle = styleStack.back();

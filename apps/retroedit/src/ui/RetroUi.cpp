@@ -37,6 +37,9 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
     if (state.showFontDialog)
         DrawFontDialog(buffer, state);
 
+    if (state.themeDialogActive)
+        DrawThemeDialog(buffer, state);
+
     if (state.wordCountDialogActive)
         DrawWordCountDialog(buffer, state);
 
@@ -312,10 +315,12 @@ namespace
                              bool spellCheckEnabled, bool highlightMisspelled)
     {
         // Options menu (idx 5) has the live On/Off toggles.
-        if (menuIdx == 5 && itemIdx == 1) return wordWrap            ? "On" : "Off";
-        if (menuIdx == 5 && itemIdx == 2) return showWordCount       ? "On" : "Off";
-        if (menuIdx == 5 && itemIdx == 3) return spellCheckEnabled   ? "On" : "Off";
-        if (menuIdx == 5 && itemIdx == 4) return highlightMisspelled ? "On" : "Off";
+        // Options menu (menuIdx 5) after Theme... inserted at item 1:
+        // 0=Font, 1=Theme, 2=WordWrap, 3=WordCount, 4=Spell, 5=Highlight.
+        if (menuIdx == 5 && itemIdx == 2) return wordWrap            ? "On" : "Off";
+        if (menuIdx == 5 && itemIdx == 3) return showWordCount       ? "On" : "Off";
+        if (menuIdx == 5 && itemIdx == 4) return spellCheckEnabled   ? "On" : "Off";
+        if (menuIdx == 5 && itemIdx == 5) return highlightMisspelled ? "On" : "Off";
         return item.shortcut;
     }
 
@@ -570,6 +575,16 @@ RetroUi::Rect RetroUi::FontDialogRect(int screenColumns, int faceCount, int size
 {
     int listRows = std::max(faceCount, sizeCount);
     return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, 60, listRows + 5);
+}
+
+RetroUi::Rect RetroUi::ThemeDialogRect(int screenColumns, int themeCount) const
+{
+    // Width 36 cells: enough for "Green (retro)" and "White (office)" plus
+    // a 2-cell padding each side. Height = title row + blank + items + blank + hint.
+    constexpr int kInnerW = 34;
+    int outerWidth  = kInnerW + 2;
+    int outerHeight = themeCount + 5;
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, outerWidth, outerHeight);
 }
 
 RetroUi::Rect RetroUi::HelpScreenRect(int screenColumns) const
@@ -1420,4 +1435,79 @@ void RetroUi::DrawFontDialog(ScreenBuffer& buffer, const EditorUiState& state)
     {
         // there's a blank line between the lists and the hint
     }
+}
+
+// ---------------------------------------------------------------------------
+// Theme picker dialog
+// ---------------------------------------------------------------------------
+
+void RetroUi::DrawThemeDialog(ScreenBuffer& buffer, const EditorUiState& state)
+{
+    const int themeCount = ThemeCount();
+    Rect r = ThemeDialogRect(buffer.Columns(), themeCount);
+    const int x = r.x, y = r.y;
+    const int outerWidth  = r.w;
+    const int outerHeight = r.h;
+
+    Color fg     = m_theme.normalText;
+    Color bg     = m_theme.background;
+    Color bright = m_theme.brightText;
+    Color dim    = m_theme.dimText;
+
+    DrawBox(buffer, x, y, outerWidth, outerHeight, fg, bg);
+
+    const char* title = " Select Theme ";
+    int titleX = x + (outerWidth - static_cast<int>(std::strlen(title))) / 2;
+    buffer.WriteText(titleX, y, title, bright, bg);
+
+    const int innerW = outerWidth - 2;
+    for (int i = 0; i < themeCount; ++i)
+    {
+        int rowY = y + 2 + i;
+        bool focused = (i == state.themeDialogFocusIdx);
+        Color rowFg = focused ? m_theme.reverseForeground
+                              : (i == state.themeDialogActiveIdx ? bright : fg);
+        Color rowBg = focused ? m_theme.reverseBackground : bg;
+
+        for (int c = 0; c < innerW; ++c)
+            buffer.PutChar(x + 1 + c, rowY, U' ', rowFg, rowBg);
+
+        std::string label = " ";
+        label += ThemeDisplayName(static_cast<ThemeName>(i));
+        if (i == state.themeDialogActiveIdx) label += " *";
+        if (static_cast<int>(label.size()) > innerW) label.resize(innerW);
+        buffer.WriteText(x + 1, rowY, label, rowFg, rowBg);
+    }
+
+    const char* hint = "[Up/Down] Move  [Enter] Apply  [Esc] Cancel";
+    int hintLen = static_cast<int>(std::strlen(hint));
+    int hintX = x + (outerWidth - hintLen) / 2;
+    if (hintX < x + 1) hintX = x + 1;
+    buffer.WriteText(hintX, y + outerHeight - 2, hint, dim, bg);
+}
+
+RetroUi::ThemeDialogClick RetroUi::HitTestThemeDialog(int cellCol, int cellRow,
+                                                      int screenColumns,
+                                                      int themeCount) const
+{
+    Rect r = ThemeDialogRect(screenColumns, themeCount);
+    ThemeDialogClick out;
+    if (!r.Contains(cellCol, cellRow)) return out;
+
+    int relRow = cellRow - r.y;
+    // Row layout: 0 = top border, 1 = title gap, 2..2+themeCount-1 = items,
+    // then blank row, then hint row, then bottom border.
+    if (relRow >= 2 && relRow < 2 + themeCount)
+    {
+        out.hit   = ThemeHit::Row;
+        out.index = relRow - 2;
+        return out;
+    }
+    if (relRow == r.h - 2)
+    {
+        std::string tok = TokenAt("[Enter] Apply  [Esc] Cancel", r.x, cellCol);
+        if (tok == "ENTER") out.hit = ThemeHit::OkHint;
+        else if (tok == "ESC") out.hit = ThemeHit::CancelHint;
+    }
+    return out;
 }

@@ -9,7 +9,7 @@ RetroEdit is a plain-text editor — one buffer of `std::string` lines, no per-c
 - **RetroEdit** — pure plain-text editor. Always character-cell rendering. No pages, no margins, no formatting.
 - **RetroDocWriter** — always-on WYSIWYG document writer. Proportional layout on a US Letter page, per-character bold/italic/underline/strikethrough, native RTF I/O.
 
-## Current state (Phase 1 + Phase 2 + Phase 3 shipped)
+## Current state (Phase 1 + Phase 2 + Phase 3 + Phase 4 shipped)
 
 **Phase 1 — layout-only WYSIWYG:**
 
@@ -38,16 +38,26 @@ RetroEdit is a plain-text editor — one buffer of `std::string` lines, no per-c
 - **RTF round-trip preserves face + size runs.** The writer builds `\fonttbl` from every distinct face used in the document and emits `\fN` / `\fsN` differentially in the body. The reader parses multi-entry `\fonttbl`, maps each entry to a `FontFace` via `FontFaceFromFamilyName`, and applies per-run `\fN` / `\fsN` while walking the body. Inherit-sentinel chars (the doc default) are folded back when the body's `\fN` / `\fsN` value matches the header's `\deff` / `\fs`, so files that don't mix fonts round-trip without spurious explicit overrides.
 - **Style-aware print path.** `Print.cpp` gained a formatted code path triggered when `PrintRequest::formats` is set. It iterates per-character with a `(face, pointSize, styleBits)` → `HFONT` cache, registers every used TTF privately via `AddFontResourceEx`, and switches GDI fonts per run inside each visual line. Wrap and pagination mirror the screen renderer (pixel-based, variable line height) so printed output matches what's on screen.
 
+**Phase 4 — theme picker + per-character text color:**
+
+- **Theme picker** (both products, `Options > Theme...`). Two presets: Green (the existing retro look, byte-for-byte) and White (near-white background / near-black text for users who don't want green-on-black). Choice persists in `%LOCALAPPDATA%\RetroEdit\config.ini` under the `theme_name` key and applies before the first frame on every launch. Theme is now factory-built (`core/render/Theme.h` → `MakeTheme(ThemeName)`); both products use the same registry so future themes cost one entry.
+- **Per-character text color** (RetroDocWriter only). `CharFormat` gains a `color` byte holding an index into a fixed 16-color CGA/RTF palette (black, dark red, …, white). `Inherit` (0xFF) means "follow the active theme's normal-text color", so switching themes recolors unstyled text but leaves explicitly-colored runs alone.
+- **Format > Text Color...** opens a 4×4 swatch picker. With a selection active → pins the color to the range via `SetColorInRange`; without selection → updates `m_currentColor` so next-typed input picks it up. Mirror of how Font dialog and Bold/Italic/Underline behave.
+- **RTF round-trip.** The writer always emits a 16-entry `\colortbl` (plus the leading "auto" semicolon), then differential `\cfN` per character run. The reader parses third-party color tables by mapping each `\red\green\blue` triple to the nearest palette index via `Palette::NearestIndex`, so a Word document with arbitrary RGB colors loads with a sensible approximation.
+- **Style-aware print path** now also honors color: each `(font, color)` group calls `SetTextColor` before its `TextOutA`. Inherit chars print as `RGB(0,0,0)` regardless of screen theme — paper is white.
+
 **Cursor navigation caveat:** `Application::NavigationWrapWidth` still computes Up/Down arrow step from the document's default font's chars-per-line. Heading lines (mixed sizes) may step at a column that doesn't match the visual wrap — keyboard navigation will look off by a few columns inside heading runs. Defer to a future phase if it bites.
 
-**Explicitly not yet shipped (Phase 4+):**
+**Explicitly not yet shipped (Phase 5+):**
 
-- Color / highlighting per character
+- Background highlight color (RTF `\highlightN`)
+- Custom-RGB color picker (Phase 4 ships only the 16 fixed palette colors)
 - Page breaks (text still flows as one tall page)
 - Rulers, margin guides, headers/footers
 - Print preview pane
 - Selectable page size (US Letter is hardcoded)
 - Pixel-accurate cursor-arrow navigation in mixed-size paragraphs (see caveat above)
+- Theme files in `assets/themes/*.ini` (themes remain hardcoded in `Theme.cpp`)
 
 ## Architecture (where things live)
 
@@ -86,10 +96,12 @@ RetroDocWriter writes (and is guaranteed to round-trip) the following RTF contro
 | `\rtf1`      | RTF version marker (header)                            |
 | `\ansi`      | Default character set                                  |
 | `\ansicpg1252` | Default code page                                    |
-| `\fonttbl`   | Font table group (single entry, the document font)     |
+| `\fonttbl`   | Font table group (one entry per face used in the doc)  |
 | `\fN`        | Selects font N from the table (header or per-run)      |
 | `\deffN`     | Default font index                                     |
 | `\fs<N>`     | Font size in half-points (`\fs24` = 12 pt; header or per-run) |
+| `\colortbl`  | Color table; always 16 entries plus the leading "auto" semicolon |
+| `\cfN`       | Foreground color index (0 = auto / inherit; 1..16 = palette) |
 | `\b` / `\b0` | Bold on / off                                          |
 | `\i` / `\i0` | Italic on / off                                        |
 | `\ul` / `\ulnone` | Underline on / off (also accepts `\ul0`)          |
@@ -100,13 +112,15 @@ RetroDocWriter writes (and is guaranteed to round-trip) the following RTF contro
 | `\'hh`       | Hex byte escape (for high-bit Latin-1 characters)      |
 | `{` / `}`    | Group delimiters — `{` saves style; `}` restores it    |
 
-**Read-only skip-list:** RetroDocWriter recognizes the following destination groups and silently consumes them (text inside is not added to the document body):
+**Read-only skip-list:** RetroDocWriter recognizes the following destination groups and silently consumes them (text inside is not added to the document body). `\fonttbl` and `\colortbl` are NOT on this list — they're parsed for table contents.
 
 ```
-fonttbl  filetbl  colortbl  stylesheet  listtable  rsidtbl
-info     pict     header    footer      headerl    headerr
-footerl  footerr  themedata datastore   object     field
-shppict  nonshppict bkmkstart bkmkend   xe         tc
+filetbl    stylesheet  listtable  rsidtbl
+info       pict        header     footer
+headerl    headerr     footerl    footerr
+themedata  datastore   object     field
+shppict    nonshppict  bkmkstart  bkmkend
+xe         tc
 ```
 
 Plus the standard `\*` "ignorable destination" introducer, which marks the *next* group as one to skip whatever its destination keyword.

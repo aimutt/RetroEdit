@@ -1,5 +1,6 @@
 #include "RtfWriter.h"
 #include "editor/CharStyle.h"
+#include "editor/Palette.h"
 #include "render/FontSettings.h"
 #include <cstdio>
 #include <fstream>
@@ -97,14 +98,30 @@ std::string Write(const FormattedTextBuffer& buf,
         out += ";}";
     }
     out += "}\n";
+    // Color table — always emit the full 16-color palette in fixed order
+    // so reader code can map palette index ↔ \cfN with no per-document
+    // table negotiation. RTF convention: a leading empty entry (just `;`)
+    // is "auto"; \cf0 in our subset means "no override" (Inherit).
+    out += "{\\colortbl;";
+    for (int i = 0; i < Palette::kCount; ++i)
+    {
+        Color cc = Palette::ColorAt(static_cast<uint8_t>(i));
+        char rgb[40];
+        std::snprintf(rgb, sizeof(rgb), "\\red%d\\green%d\\blue%d;", cc.r, cc.g, cc.b);
+        out += rgb;
+    }
+    out += "}\n";
     char fsbuf[32];
     std::snprintf(fsbuf, sizeof(fsbuf), "\\fs%d\n", pointSize * 2);
     out += fsbuf;
 
-    // Body: emit differential \fN, \fsN, and style control words.
+    // Body: emit differential \fN, \fsN, \cfN, and style control words.
+    // \cf0 = "auto" (Inherit); palette index N → \cf<N+1> because index 0
+    // in our \colortbl is the empty "auto" entry.
     uint8_t curStyle = 0;
     int     curFaceIdx = 0;          // index into faceIndex
     int     curHalfPt  = pointSize * 2;
+    int     curColorRtf = 0;         // 0 = auto, 1..16 = palette index + 1
     for (int row = 0; row < buf.LineCount(); ++row)
     {
         const std::string& line = buf.Line(row);
@@ -120,6 +137,10 @@ std::string Write(const FormattedTextBuffer& buf,
             int wantHalfPt  = (f.size == CharFormat::Inherit || f.size >= 4)
                               ? pointSize * 2
                               : FontSizePoints(FontSizeAt(static_cast<int>(f.size))) * 2;
+            int wantColorRtf = (f.color == CharFormat::Inherit
+                                || f.color >= Palette::kCount)
+                              ? 0
+                              : static_cast<int>(f.color) + 1;
 
             if (wantFaceIdx != curFaceIdx)
             {
@@ -134,6 +155,13 @@ std::string Write(const FormattedTextBuffer& buf,
                 std::snprintf(buf2, sizeof(buf2), "\\fs%d ", wantHalfPt);
                 out += buf2;
                 curHalfPt = wantHalfPt;
+            }
+            if (wantColorRtf != curColorRtf)
+            {
+                char buf2[32];
+                std::snprintf(buf2, sizeof(buf2), "\\cf%d ", wantColorRtf);
+                out += buf2;
+                curColorRtf = wantColorRtf;
             }
             if (f.style != curStyle)
             {

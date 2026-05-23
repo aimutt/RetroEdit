@@ -1,5 +1,6 @@
 #include "Application.h"
 #include "editor/CharStyle.h"
+#include "editor/Palette.h"
 #include "editor/WordCount.h"
 #include "platform/AppData.h"
 #include "platform/AssetPath.h"
@@ -312,6 +313,61 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
         return;
     }
 
+    // Theme picker — single-column up/down list.
+    if (m_promptMode == PromptMode::ThemeDialog)
+    {
+        const int themeCount = ThemeCount();
+        switch (key.scancode)
+        {
+            case SDL_SCANCODE_UP:
+                if (m_themeDialogFocusIdx > 0) --m_themeDialogFocusIdx;
+                break;
+            case SDL_SCANCODE_DOWN:
+                if (m_themeDialogFocusIdx < themeCount - 1) ++m_themeDialogFocusIdx;
+                break;
+            case SDL_SCANCODE_RETURN:
+                ApplyThemeDialogSelection();
+                break;
+            case SDL_SCANCODE_ESCAPE:
+                m_promptMode    = PromptMode::None;
+                m_statusMessage = "Ready";
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    // Color picker — 4x4 grid (left/right/up/down navigate).
+    if (m_promptMode == PromptMode::ColorDialog)
+    {
+        constexpr int kCols = 4;
+        const int total = Palette::kCount;
+        int idx = m_colorDialogFocusIdx;
+        int row = idx / kCols;
+        int col = idx % kCols;
+        switch (key.scancode)
+        {
+            case SDL_SCANCODE_LEFT:  if (col > 0) --col; break;
+            case SDL_SCANCODE_RIGHT: if (col < kCols - 1 && row * kCols + col + 1 < total) ++col; break;
+            case SDL_SCANCODE_UP:    if (row > 0) --row; break;
+            case SDL_SCANCODE_DOWN:
+                if ((row + 1) * kCols + col < total) ++row;
+                break;
+            case SDL_SCANCODE_RETURN:
+                ApplyColorDialogSelection();
+                return;
+            case SDL_SCANCODE_ESCAPE:
+                m_promptMode    = PromptMode::None;
+                m_statusMessage = "Ready";
+                return;
+            default:
+                return;
+        }
+        m_colorDialogFocusIdx = std::clamp(row * kCols + col, 0, total - 1);
+        return;
+    }
+
     // Text/confirmation prompts
     if (m_promptMode != PromptMode::None)
     {
@@ -438,7 +494,7 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
             int endRow = 0, endCol = 0;
             m_document->Buffer().InsertText(m_cursor.column, m_cursor.row,
                                             "    ",
-                                            CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit},
+                                            CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit, m_currentColor},
                                             endRow, endCol);
             m_cursor.row    = endRow;
             m_cursor.column = endCol;
@@ -877,6 +933,76 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
         return true;
     }
 
+    // Theme picker
+    if (m_promptMode == PromptMode::ThemeDialog)
+    {
+        const int themeCount = ThemeCount();
+        auto rect = m_ui->ThemeDialogRect(m_screenColumns, themeCount);
+        if (!rect.Contains(cellCol, cellRow))
+        {
+            m_promptMode    = PromptMode::None;
+            m_statusMessage = "Ready";
+            m_needsRedraw   = true;
+            return true;
+        }
+        auto click = m_ui->HitTestThemeDialog(cellCol, cellRow, m_screenColumns,
+                                              themeCount);
+        switch (click.hit)
+        {
+            case RetroUi::ThemeHit::Row:
+                m_themeDialogFocusIdx = click.index;
+                ApplyThemeDialogSelection();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::ThemeHit::OkHint:
+                ApplyThemeDialogSelection();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::ThemeHit::CancelHint:
+                m_promptMode    = PromptMode::None;
+                m_statusMessage = "Ready";
+                m_needsRedraw   = true;
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
+    // Color picker
+    if (m_promptMode == PromptMode::ColorDialog)
+    {
+        auto rect = m_ui->ColorDialogRect(m_screenColumns);
+        if (!rect.Contains(cellCol, cellRow))
+        {
+            m_promptMode    = PromptMode::None;
+            m_statusMessage = "Ready";
+            m_needsRedraw   = true;
+            return true;
+        }
+        auto click = m_ui->HitTestColorDialog(cellCol, cellRow, m_screenColumns);
+        switch (click.hit)
+        {
+            case RetroUi::ColorHit::Swatch:
+                m_colorDialogFocusIdx = click.index;
+                ApplyColorDialogSelection();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::ColorHit::OkHint:
+                ApplyColorDialogSelection();
+                m_needsRedraw = true;
+                break;
+            case RetroUi::ColorHit::CancelHint:
+                m_promptMode    = PromptMode::None;
+                m_statusMessage = "Ready";
+                m_needsRedraw   = true;
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
     // Word Count dialog
     if (m_promptMode == PromptMode::WordCountDialog)
     {
@@ -1291,7 +1417,7 @@ void Application::HandleTextInput(const char* text)
             }
             EnsureUndoBeforeInsert();
             m_document->Buffer().InsertChar(m_cursor.column, m_cursor.row, *p,
-                                            CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit});
+                                            CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit, m_currentColor});
             ++m_cursor.column;
             m_document->MarkDirty();
             UpdateWindowTitle();
@@ -1582,7 +1708,7 @@ void Application::PasteClipboard()
 
     int endRow = 0, endCol = 0;
     m_document->Buffer().InsertText(m_cursor.column, m_cursor.row, text,
-                                    CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit},
+                                    CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit, m_currentColor},
                                     endRow, endCol);
     m_cursor.row    = endRow;
     m_cursor.column = endCol;
@@ -1924,6 +2050,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
                 case 1: ToggleItalic();        break;
                 case 2: ToggleUnderline();     break;
                 case 3: ToggleStrikethrough(); break;
+                case 4: OpenColorDialog();     break;
                 default: break;
             }
             break;
@@ -1959,10 +2086,11 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
             switch (itemIdx)
             {
                 case 0: OpenFontDialog();  break;   // Font...
-                case 1: OpenWordWrapDialog(); break; // Word Wrap
-                case 2: OpenWordCountDialog(); break; // Word Count
-                case 3: ToggleSpellCheck(); break;
-                case 4: ToggleHighlightMisspelled(); break;
+                case 1: OpenThemeDialog(); break;   // Theme...
+                case 2: OpenWordWrapDialog(); break; // Word Wrap
+                case 3: OpenWordCountDialog(); break; // Word Count
+                case 4: ToggleSpellCheck(); break;
+                case 5: ToggleHighlightMisspelled(); break;
                 default: break;
             }
             break;
@@ -2103,6 +2231,67 @@ void Application::ApplyFontDialogSelection()
     {
         m_statusMessage = "Ready";
     }
+}
+
+void Application::OpenThemeDialog()
+{
+    m_promptMode          = PromptMode::ThemeDialog;
+    m_themeDialogFocusIdx = static_cast<int>(m_themeName);
+    m_statusMessage.clear();
+}
+
+void Application::ApplyThemeDialogSelection()
+{
+    int idx = std::clamp(m_themeDialogFocusIdx, 0, ThemeCount() - 1);
+    ThemeName chosen = static_cast<ThemeName>(idx);
+    m_promptMode = PromptMode::None;
+    if (chosen == m_themeName)
+    {
+        m_statusMessage = "Ready";
+        return;
+    }
+    ApplyTheme(chosen);
+    m_statusMessage = std::string("Theme: ") + ThemeDisplayName(chosen);
+}
+
+void Application::OpenColorDialog()
+{
+    m_promptMode = PromptMode::ColorDialog;
+    // Seed the dialog from the first char of the selection if active, else
+    // from m_currentColor. Inherit means "no override" — show the cursor at
+    // the first swatch (Black) as a sensible default focus.
+    uint8_t seed = m_currentColor;
+    if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
+    {
+        int sr, sc, er, ec;
+        m_selection.GetRange(m_cursor.row, m_cursor.column, sr, sc, er, ec);
+        uint8_t c = m_document->Buffer().FormatAt(sr, sc).color;
+        if (c != CharFormat::Inherit) seed = c;
+    }
+    if (seed == CharFormat::Inherit) seed = 0;
+    m_colorDialogFocusIdx = std::clamp(static_cast<int>(seed), 0, Palette::kCount - 1);
+    m_statusMessage.clear();
+}
+
+void Application::ApplyColorDialogSelection()
+{
+    int idx = std::clamp(m_colorDialogFocusIdx, 0, Palette::kCount - 1);
+    m_promptMode = PromptMode::None;
+
+    if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
+    {
+        int sr, sc, er, ec;
+        m_selection.GetRange(m_cursor.row, m_cursor.column, sr, sc, er, ec);
+        PushUndoBeforeEdit();
+        m_document->Buffer().SetColorInRange(sr, sc, er, ec, static_cast<uint8_t>(idx));
+        m_document->MarkDirty();
+        UpdateWindowTitle();
+        m_statusMessage = std::string("Color: ") + Palette::NameAt(static_cast<uint8_t>(idx));
+        return;
+    }
+
+    m_currentColor = static_cast<uint8_t>(idx);
+    m_statusMessage = std::string("Color (next-typed): ") + Palette::NameAt(static_cast<uint8_t>(idx));
 }
 
 // Shared by the keyboard Y/N handlers and the mouse Yes/No clicks on confirm
@@ -2324,7 +2513,10 @@ void Application::LoadGlobalSettings()
             m_spellCheckEnabled = s.GetBool("spell_check");
         if (s.Has("highlight_misspelled"))
             m_highlightMisspelled = s.GetBool("highlight_misspelled");
+        if (s.Has("theme_name"))
+            m_themeName = ParseThemeName(s.GetString("theme_name"));
     }
+    m_theme = MakeTheme(m_themeName);
 
     m_dictionary.LoadUserOverlay(dir + "user_dictionary.txt");
 }
@@ -2335,9 +2527,21 @@ void Application::SaveGlobalSettings()
     if (dir.empty()) return;
 
     FileSettings s;
+    // Load first so any future keys round-trip through older code paths.
+    s.Load(dir + "config.ini");
     s.SetBool("spell_check",          m_spellCheckEnabled);
     s.SetBool("highlight_misspelled", m_highlightMisspelled);
+    s.SetString("theme_name",         ThemeNameKey(m_themeName));
     s.Save(dir + "config.ini");
+}
+
+void Application::ApplyTheme(ThemeName name)
+{
+    if (name == m_themeName) return;
+    m_themeName = name;
+    m_theme = MakeTheme(name);
+    m_needsRedraw = true;
+    SaveGlobalSettings();
 }
 
 // ---------------------------------------------------------------------------
@@ -2970,6 +3174,15 @@ void Application::Render()
     uiState.fontDialogFocusColumn = m_fontDialogFocusColumn;
     uiState.fontDialogActiveFace  = static_cast<int>(m_fontSettings.face);
     uiState.fontDialogActiveSize  = IndexOfFontSize(m_fontSettings.size);
+
+    uiState.themeDialogActive    = (m_promptMode == PromptMode::ThemeDialog);
+    uiState.themeDialogFocusIdx  = m_themeDialogFocusIdx;
+    uiState.themeDialogActiveIdx = static_cast<int>(m_themeName);
+
+    uiState.colorDialogActive    = (m_promptMode == PromptMode::ColorDialog);
+    uiState.colorDialogFocusIdx  = m_colorDialogFocusIdx;
+    uiState.colorDialogCurrent   = (m_currentColor == CharFormat::Inherit)
+                                   ? -1 : static_cast<int>(m_currentColor);
 
     // Editor options
     uiState.wordWrap = m_wordWrap;
