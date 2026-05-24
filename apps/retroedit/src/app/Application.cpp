@@ -38,8 +38,12 @@ Application::Application()
         return;
     }
 
-    // Default font: Cascadia Mono Medium — clean, professional, legible.
-    m_fontSettings = FontSettings{ FontFace::CascadiaMono, FontSize::Medium };
+    // Chrome (menus / status bar / dialogs) is fixed at Cascadia Mono
+    // Medium so the cell-grid chrome layout never shifts when the editor
+    // font is changed. Editor body uses m_documentFontSettings; Options >
+    // Font targets only that.
+    m_chromeFontSettings   = FontSettings{ FontFace::CascadiaMono, FontSize::Medium };
+    m_documentFontSettings = FontSettings{ FontFace::CascadiaMono, FontSize::Small  };
 
     m_windowWidth  = DEFAULT_WINDOW_WIDTH;
     m_windowHeight = DEFAULT_WINDOW_HEIGHT;
@@ -52,7 +56,9 @@ Application::Application()
     // Pick up the actual window size in case the OS clamped or scaled it.
     SDL_GetWindowSize(m_window->GetWindow(), &m_windowWidth, &m_windowHeight);
 
-    m_renderer = std::make_unique<RetroRenderer>(m_window->GetRenderer(), m_fontSettings);
+    m_renderer = std::make_unique<RetroRenderer>(m_window->GetRenderer(), m_chromeFontSettings);
+    m_editorRenderer = std::make_unique<EditorRenderer>(
+        m_window->GetRenderer(), m_theme, m_documentFontSettings);
 
     m_screenColumns = ComputeScreenColumns(m_renderer->CellWidth());
     int rows        = ComputeScreenRows(m_renderer->CellHeight());
@@ -423,7 +429,7 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
 
         case SDL_SCANCODE_PAGEUP:
             UpdateSelection(shift);
-            m_cursor.row = std::max(0, m_cursor.row - m_layout.EDITOR_ROWS);
+            m_cursor.row = std::max(0, m_cursor.row - EditorRows());
             ClampCursorToLine();
             ScrollViewport();
             m_lastActionWasInsert = false;
@@ -432,7 +438,7 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
         case SDL_SCANCODE_PAGEDOWN:
             UpdateSelection(shift);
             m_cursor.row = std::min(m_document->Buffer().LineCount() - 1,
-                                    m_cursor.row + m_layout.EDITOR_ROWS);
+                                    m_cursor.row + EditorRows());
             ClampCursorToLine();
             ScrollViewport();
             m_lastActionWasInsert = false;
@@ -1365,7 +1371,7 @@ void Application::UpdateSelection(bool shift)
 
 int Application::NavigationWrapWidth() const
 {
-    if (m_wordWrap) return m_screenColumns;
+    if (m_wordWrap) return EditorColumns();
     return 0; // no wrap — Up/Down skip whole buffer rows
 }
 
@@ -1990,11 +1996,14 @@ void Application::ClampCursorToLine()
 int Application::DisplayRowsForLine(int bufRow) const
 {
     if (bufRow < 0 || bufRow >= m_document->Buffer().LineCount()) return 1;
-    return CountWrapRows(m_document->Buffer().Line(bufRow), m_screenColumns);
+    return CountWrapRows(m_document->Buffer().Line(bufRow), EditorColumns());
 }
 
 void Application::ScrollViewport()
 {
+    const int editorRows = EditorRows();
+    const int editorCols = EditorColumns();
+
     if (m_wordWrap)
     {
         // Wrap mode — measure scroll in display rows, no horizontal scroll.
@@ -2009,14 +2018,14 @@ void Application::ScrollViewport()
             for (int r = m_viewportTop; r < m_cursor.row; ++r)
                 sum += DisplayRowsForLine(r);
             auto starts = ComputeWrapStarts(
-                m_document->Buffer().Line(m_cursor.row), m_screenColumns);
+                m_document->Buffer().Line(m_cursor.row), editorCols);
             sum += WrapSegmentForColumn(starts, m_cursor.column);
             return sum;
         };
 
         // If cursor is below the visible area, advance viewportTop one
         // buffer line at a time until it fits (or until viewportTop catches up).
-        while (cursorDisplayRow() >= m_layout.EDITOR_ROWS
+        while (cursorDisplayRow() >= editorRows
                && m_viewportTop < m_cursor.row)
         {
             ++m_viewportTop;
@@ -2028,21 +2037,21 @@ void Application::ScrollViewport()
     int cursorRow = m_cursor.row - m_viewportTop;
     if (cursorRow < 0)
         m_viewportTop = m_cursor.row;
-    else if (cursorRow >= m_layout.EDITOR_ROWS)
-        m_viewportTop = m_cursor.row - m_layout.EDITOR_ROWS + 1;
+    else if (cursorRow >= editorRows)
+        m_viewportTop = m_cursor.row - editorRows + 1;
 
     int cursorCol = m_cursor.column - m_viewportLeft;
     if (cursorCol < 0)
         m_viewportLeft = m_cursor.column;
-    else if (cursorCol >= m_screenColumns)
-        m_viewportLeft = m_cursor.column - m_screenColumns + 1;
+    else if (cursorCol >= editorCols)
+        m_viewportLeft = m_cursor.column - editorCols + 1;
 }
 
 void Application::OpenFontDialog()
 {
     m_promptMode            = PromptMode::FontDialog;
-    int presetIdx = static_cast<int>(m_fontSettings.face) * FontSizeCount()
-                  + IndexOfFontSize(m_fontSettings.size);
+    int presetIdx = static_cast<int>(m_documentFontSettings.face) * FontSizeCount()
+                  + IndexOfFontSize(m_documentFontSettings.size);
     int presetCount = FontFaceMonospaceCount() * FontSizeCount();
     m_fontDialogPresetIdx = std::clamp(presetIdx, 0, std::max(0, presetCount - 1));
     constexpr int visibleRows = 12;
@@ -2058,7 +2067,7 @@ void Application::ApplyFontDialogSelection()
         FontSizeAt(m_fontDialogPresetIdx % FontSizeCount())
     };
     m_promptMode = PromptMode::None;
-    if (!(choice == m_fontSettings))
+    if (!(choice == m_documentFontSettings))
     {
         ApplyFontSettings(choice);
         m_statusMessage = "Font changed";
@@ -2603,21 +2612,50 @@ void Application::HandleWindowResized(int newW, int newH)
     ScrollViewport();
 }
 
+int Application::EditorColumns() const
+{
+    if (m_editorRenderer && m_editorRenderer->CellWidth() > 0)
+        return std::max(1, m_windowWidth / m_editorRenderer->CellWidth());
+    return std::max(1, m_screenColumns);
+}
+
+int Application::EditorRows() const
+{
+    if (!m_renderer || m_renderer->CellHeight() <= 0
+        || !m_editorRenderer || m_editorRenderer->CellHeight() <= 0)
+        return std::max(1, m_layout.EDITOR_ROWS);
+    int editorPxH = (m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1)
+                  * m_renderer->CellHeight();
+    return std::max(1, editorPxH / m_editorRenderer->CellHeight());
+}
+
+SDL_Rect Application::EditorPixelRect() const
+{
+    SDL_Rect r{};
+    if (!m_renderer || m_renderer->CellWidth() <= 0 || m_renderer->CellHeight() <= 0)
+        return r;
+    const int cw = m_renderer->CellWidth();
+    const int ch = m_renderer->CellHeight();
+    r.x = 0;
+    r.y = m_layout.ROW_EDITOR_FIRST * ch;
+    r.w = m_screenColumns * cw;
+    r.h = (m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1) * ch;
+    return r;
+}
+
 void Application::ApplyFontSettings(const FontSettings& settings)
 {
-    m_fontSettings = settings;
-    m_renderer->SetFontSettings(settings);
+    // Document font only — chrome (RetroRenderer + screen buffer dimensions)
+    // is fixed at startup, so menus and dialogs don't reshape when the user
+    // picks a different editor font. The EditorRenderer rebuilds its own
+    // GlyphCache and exposes new CellWidth / CellHeight; the editor column
+    // count is derived from those at render time.
+    m_documentFontSettings = settings;
+    if (m_editorRenderer)
+        m_editorRenderer->SetFontSettings(settings);
 
-    // Window stays at WINDOW_WIDTH x WINDOW_HEIGHT — cell size changes, so
-    // the column/row count of the screen buffer is what shifts.
-    m_screenColumns = ComputeScreenColumns(m_renderer->CellWidth());
-    int rows        = ComputeScreenRows(m_renderer->CellHeight());
-    m_layout        = Layout(rows);
-
-    m_screenBuffer = std::make_unique<ScreenBuffer>(m_screenColumns, rows);
-    m_ui           = std::make_unique<RetroUi>(m_theme, m_layout);
-
-    // Keep cursor visible after a layout change.
+    // Editor cell size may have changed — re-clamp so the cursor stays in
+    // the visible editor area.
     ClampCursorToLine();
     ScrollViewport();
 }
@@ -2758,8 +2796,8 @@ void Application::Render()
     uiState.fontDialogPresetIdx   = m_fontDialogPresetIdx;
     uiState.fontDialogScrollTop   = m_fontDialogScrollTop;
     uiState.fontDialogActivePreset =
-        static_cast<int>(m_fontSettings.face) * FontSizeCount()
-        + IndexOfFontSize(m_fontSettings.size);
+        static_cast<int>(m_documentFontSettings.face) * FontSizeCount()
+        + IndexOfFontSize(m_documentFontSettings.size);
 
     uiState.themeDialogActive    = (m_promptMode == PromptMode::ThemeDialog);
     uiState.themeDialogFocusIdx  = m_themeDialogFocusIdx;
@@ -2802,7 +2840,7 @@ void Application::Render()
         const auto& buf = m_document->Buffer();
         int firstRow = std::max(0, m_viewportTop);
         int lastRow  = std::min(buf.LineCount() - 1,
-                                m_viewportTop + m_layout.EDITOR_ROWS - 1);
+                                m_viewportTop + EditorRows() - 1);
         for (int r = firstRow; r <= lastRow; ++r)
         {
             const std::string& line = buf.Line(r);
@@ -2837,36 +2875,41 @@ void Application::Render()
 
     m_ui->Draw(*m_screenBuffer, m_cursor, uiState);
 
-    if (m_cursor.visible && m_promptMode == PromptMode::None)
-    {
-        int screenRow;
-        int screenCol;
-        if (m_wordWrap)
-        {
-            int displayRow = 0;
-            for (int r = m_viewportTop; r < m_cursor.row; ++r)
-                displayRow += DisplayRowsForLine(r);
-            auto starts = ComputeWrapStarts(
-                m_document->Buffer().Line(m_cursor.row), m_screenColumns);
-            int segIdx = WrapSegmentForColumn(starts, m_cursor.column);
-            displayRow += segIdx;
-            screenRow = m_layout.ROW_EDITOR_FIRST + displayRow;
-            screenCol = m_cursor.column - starts[segIdx];
-        }
-        else
-        {
-            screenRow = m_cursor.row    - m_viewportTop  + m_layout.ROW_EDITOR_FIRST;
-            screenCol = m_cursor.column - m_viewportLeft;
-        }
+    // Render chrome cells (menu / status / dialogs / function-key bar) first.
+    m_renderer->PaintBuffer(*m_screenBuffer);
 
-        if (screenRow >= m_layout.ROW_EDITOR_FIRST && screenRow <= m_layout.ROW_EDITOR_LAST
-            && screenCol >= 0 && screenCol < m_screenColumns)
+    // Then paint the editor body on top with its own font/cell size.
+    // Skipped when any prompt mode is active so dialogs and overlays render
+    // over the editor without the body overdrawing them. Cursor visibility
+    // is also gated on prompt mode being None — matches pre-split behavior.
+    if (m_promptMode == PromptMode::None && m_editorRenderer && m_editorRenderer->IsValid())
+    {
+        EditorRenderer::DrawContext ctx;
+        ctx.buffer       = &m_document->Buffer();
+        SDL_Rect er = EditorPixelRect();
+        ctx.editorPxX = er.x;
+        ctx.editorPxY = er.y;
+        ctx.editorPxW = er.w;
+        ctx.editorPxH = er.h;
+        ctx.viewportTop  = m_viewportTop;
+        ctx.viewportLeft = m_viewportLeft;
+        ctx.cursorRow    = m_cursor.row;
+        ctx.cursorCol    = m_cursor.column;
+        ctx.cursorVisible = m_cursor.visible;
+        ctx.selActive    = m_selection.active;
+        ctx.selAnchorRow = m_selection.anchorRow;
+        ctx.selAnchorCol = m_selection.anchorCol;
+        ctx.wordWrap     = m_wordWrap;
+        if (m_highlightMisspelled)
         {
-            m_screenBuffer->At(screenCol, screenRow).reverseVideo = true;
+            ctx.misspelledSpans.reserve(uiState.misspelledSpans.size());
+            for (const auto& s : uiState.misspelledSpans)
+                ctx.misspelledSpans.push_back({ s.row, s.col, s.len });
         }
+        m_editorRenderer->Draw(ctx);
     }
 
-    m_renderer->Render(*m_screenBuffer);
+    m_renderer->Present();
 }
 
 void Application::UpdateCursorBlink()

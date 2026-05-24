@@ -264,9 +264,16 @@ private:
     int        m_activeMenu          = -1;
     int        m_activeItem          = -1;
 
-    // Font picker. Flat preset list — see EditorUiState comment in
-    // RetroUi.h for the (face_idx * FontSizeCount() + size_idx) encoding.
-    FontSettings m_fontSettings;
+    // Two separate font settings — the chrome (menus, status bar, dialogs,
+    // function-key bar) and the document (the WYSIWYG page contents) draw
+    // independently. The Font dialog (Options > Font...) targets the
+    // document font ONLY; the chrome font is fixed at startup so menus and
+    // dialog text don't resize when the user picks a different document font.
+    //
+    // Flat preset list encoding (face_idx * FontSizeCount() + size_idx) —
+    // see EditorUiState comment in RetroUi.h.
+    FontSettings m_chromeFontSettings;    // monospace cell-grid (RetroRenderer)
+    FontSettings m_documentFontSettings;  // proportional WYSIWYG (WysiwygRenderer)
     int          m_fontDialogPresetIdx = 0;  // focused row
     int          m_fontDialogScrollTop = 0;  // first visible row
 
@@ -299,7 +306,7 @@ private:
 
     // Per-character face/size for next-typed input when the Font dialog is
     // committed without a selection (mirrors m_currentColor's pattern).
-    // Inherit means "follow the document default" (m_fontSettings) — that
+    // Inherit means "follow the document default" (m_documentFontSettings) —
     // is the initial state. Picking a face/size in the dialog without a
     // selection sets these; existing text (which carries Inherit-face/size
     // by default) is unchanged. To restyle existing text the user must

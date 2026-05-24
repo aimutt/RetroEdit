@@ -1,6 +1,7 @@
 add_executable(RetroEdit
     src/main.cpp
     src/app/Application.cpp
+    src/render/EditorRenderer.cpp
     src/ui/RetroUi.cpp
 )
 
