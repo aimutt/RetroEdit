@@ -9,8 +9,8 @@
 // Window starts at this size. Both dimensions track live drag-resizes after
 // startup; the screen-buffer column/row count is derived from current window
 // pixels divided by the active font's cell pixel size.
-static constexpr int    DEFAULT_WINDOW_WIDTH  = 1280;
-static constexpr int    DEFAULT_WINDOW_HEIGHT = 800;
+static constexpr int    DEFAULT_WINDOW_WIDTH  = 900;
+static constexpr int    DEFAULT_WINDOW_HEIGHT = 960;
 static constexpr int    MIN_WINDOW_WIDTH      = 480;
 static constexpr int    MIN_WINDOW_HEIGHT     = 320;
 static constexpr int    MIN_SCREEN_ROWS       = 12;

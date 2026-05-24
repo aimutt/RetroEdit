@@ -192,6 +192,15 @@ private:
     const Theme& m_theme;
     Layout       m_layout;
 
+    // Debug aid called by Draw() after each modal dialog is rendered.
+    // Samples the column immediately right of the dialog's rect on each of
+    // the dialog's rows; if any cell there is non-blank, logs a warning via
+    // SDL_Log. This catches the most common dialog overflow case — a hint
+    // string drawn at a hintX such that text spills past the right border.
+    // Cheap (one column read per dialog per frame); always enabled.
+    void CheckDialogBoundsRight(const ScreenBuffer& buffer,
+                                const Rect& rect, const char* dialogName) const;
+
     void DrawMenuBar(ScreenBuffer& buffer, bool menuBarActive, int activeMenu);
     void DrawTitleBar(ScreenBuffer& buffer, const std::string& filename, bool dirty);
     void DrawEditorArea(ScreenBuffer& buffer, const TextBuffer& textBuffer,

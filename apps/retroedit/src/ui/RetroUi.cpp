@@ -3,6 +3,7 @@
 #include "editor/Selection.h"
 #include "editor/WordWrap.h"
 #include "render/FontSettings.h"
+#include <SDL3/SDL.h>
 #include <string>
 #include <algorithm>
 #include <cctype>
@@ -35,29 +36,71 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
         DrawAboutScreen(buffer);
 
     if (state.showFontDialog)
+    {
         DrawFontDialog(buffer, state);
+        CheckDialogBoundsRight(buffer, FontDialogRect(buffer.Columns()), "FontDialog");
+    }
 
     if (state.themeDialogActive)
+    {
         DrawThemeDialog(buffer, state);
+        // ThemeDialog rect depends on theme count which we don't have here;
+        // skip the check rather than guess.
+    }
 
     if (state.wordCountDialogActive)
+    {
         DrawWordCountDialog(buffer, state);
+        CheckDialogBoundsRight(buffer, WordCountDialogRect(buffer.Columns()), "WordCountDialog");
+    }
 
     if (state.printDialogActive)
+    {
         DrawPrintDialog(buffer, state);
+        CheckDialogBoundsRight(buffer, PrintDialogRect(buffer.Columns()), "PrintDialog");
+    }
 
     if (state.dialogActive)
     {
         if (state.dialogIsConfirm)
+        {
             DrawConfirmDialog(buffer, state.dialogTitle,
                               state.dialogPrompt, state.dialogPrompt2,
                               state.dialogHint);
+            CheckDialogBoundsRight(buffer, ConfirmDialogRect(buffer.Columns()), "ConfirmDialog");
+        }
         else if (state.findDialogActive)
+        {
             DrawFindDialog(buffer, state);
+            CheckDialogBoundsRight(buffer, FindDialogRect(buffer.Columns()), "FindDialog");
+        }
         else
+        {
             DrawInputDialog(buffer, state.dialogTitle,
                             state.dialogPrompt, state.dialogInput,
                             state.dialogCursorVisible);
+            CheckDialogBoundsRight(buffer, InputDialogRect(buffer.Columns()), "InputDialog");
+        }
+    }
+}
+
+void RetroUi::CheckDialogBoundsRight(const ScreenBuffer& buffer,
+                                      const Rect& rect, const char* dialogName) const
+{
+    int rightOutsideCol = rect.x + rect.w;
+    if (rightOutsideCol < 0 || rightOutsideCol >= buffer.Columns())
+        return;  // dialog flush with the screen edge — no overrun cell to check
+    for (int row = rect.y; row < rect.y + rect.h; ++row)
+    {
+        if (row < 0 || row >= buffer.Rows()) continue;
+        const ScreenCell& cell = buffer.At(rightOutsideCol, row);
+        if (cell.character > U' ')
+        {
+            SDL_Log("Dialog '%s' overflowed right border at (col=%d, row=%d) char=U+%04X",
+                    dialogName, rightOutsideCol, row,
+                    static_cast<unsigned>(cell.character));
+            return;  // one log per dialog per frame is enough to surface the bug
+        }
     }
 }
 

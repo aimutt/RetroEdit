@@ -4,6 +4,7 @@
 #include "editor/Selection.h"
 #include "editor/WordWrap.h"
 #include "render/FontSettings.h"
+#include <SDL3/SDL.h>
 #include <string>
 #include <algorithm>
 #include <cctype>
@@ -36,35 +37,84 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
         DrawAboutScreen(buffer);
 
     if (state.showFontDialog)
+    {
         DrawFontDialog(buffer, state);
+        CheckDialogBoundsRight(buffer, FontDialogRect(buffer.Columns()), "FontDialog");
+    }
 
     if (state.themeDialogActive)
+    {
         DrawThemeDialog(buffer, state);
+        // ThemeDialog rect depends on theme count, which we don't have here;
+        // skip the check rather than guess. (The dialog has a short, fixed
+        // hint and a known-narrow body, so overflow is unlikely.)
+    }
 
     if (state.colorDialogActive)
+    {
         DrawColorDialog(buffer, state);
+        CheckDialogBoundsRight(buffer, ColorDialogRect(buffer.Columns()), "ColorDialog");
+    }
 
     if (state.wordCountDialogActive)
+    {
         DrawWordCountDialog(buffer, state);
+        CheckDialogBoundsRight(buffer, WordCountDialogRect(buffer.Columns()), "WordCountDialog");
+    }
 
     if (state.printDialogActive)
+    {
         DrawPrintDialog(buffer, state);
+        CheckDialogBoundsRight(buffer, PrintDialogRect(buffer.Columns()), "PrintDialog");
+    }
 
     if (state.marginsDialogActive)
+    {
         DrawMarginsDialog(buffer, state);
+        CheckDialogBoundsRight(buffer, MarginsDialogRect(buffer.Columns()), "MarginsDialog");
+    }
 
     if (state.dialogActive)
     {
         if (state.dialogIsConfirm)
+        {
             DrawConfirmDialog(buffer, state.dialogTitle,
                               state.dialogPrompt, state.dialogPrompt2,
                               state.dialogHint);
+            CheckDialogBoundsRight(buffer, ConfirmDialogRect(buffer.Columns()), "ConfirmDialog");
+        }
         else if (state.findDialogActive)
+        {
             DrawFindDialog(buffer, state);
+            CheckDialogBoundsRight(buffer, FindDialogRect(buffer.Columns()), "FindDialog");
+        }
         else
+        {
             DrawInputDialog(buffer, state.dialogTitle,
                             state.dialogPrompt, state.dialogInput,
                             state.dialogCursorVisible);
+            CheckDialogBoundsRight(buffer, InputDialogRect(buffer.Columns()), "InputDialog");
+        }
+    }
+}
+
+void RetroUi::CheckDialogBoundsRight(const ScreenBuffer& buffer,
+                                      const Rect& rect, const char* dialogName) const
+{
+    int rightOutsideCol = rect.x + rect.w;
+    if (rightOutsideCol < 0 || rightOutsideCol >= buffer.Columns())
+        return;  // dialog flush with the screen edge — no overrun cell to check
+    for (int row = rect.y; row < rect.y + rect.h; ++row)
+    {
+        if (row < 0 || row >= buffer.Rows()) continue;
+        const ScreenCell& cell = buffer.At(rightOutsideCol, row);
+        if (cell.character > U' ')
+        {
+            SDL_Log("Dialog '%s' overflowed right border at (col=%d, row=%d) char=U+%04X",
+                    dialogName, rightOutsideCol, row,
+                    static_cast<unsigned>(cell.character));
+            return;  // one log per dialog per frame is enough to surface the bug
+        }
     }
 }
 
@@ -751,9 +801,11 @@ RetroUi::Rect RetroUi::ThemeDialogRect(int screenColumns, int themeCount) const
 RetroUi::Rect RetroUi::ColorDialogRect(int screenColumns) const
 {
     // 4x4 grid of swatches, each 5 cells wide x 1 cell tall, with 1-cell
-    // horizontal gaps. Width = 4*5 + 3*1 + 2 borders + 2 padding = 27.
+    // horizontal gaps — grid width = 4*5 + 3*1 = 23 cells. Outer width is
+    // sized to fit the bottom hint "[Enter] Apply  [Esc] Cancel" (27 chars)
+    // with 2-cell padding on each side; the grid is then centered inside.
     // Height = title row + blank + 4 grid rows + blank + hint + bottom = 9.
-    constexpr int kOuterW = 28;
+    constexpr int kOuterW = 32;
     constexpr int kOuterH = 9;
     return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, kOuterW, kOuterH);
 }
@@ -1808,7 +1860,10 @@ void RetroUi::DrawColorDialog(ScreenBuffer& buffer, const EditorUiState& state)
     int titleX = x + (outerW - static_cast<int>(std::strlen(title))) / 2;
     buffer.WriteText(titleX, y, title, bright, bg);
 
-    const int gridX0 = x + 1;
+    // Center the grid horizontally inside the dialog.
+    constexpr int kGridWidth =
+        kColorGridCols * kColorSwatchW + (kColorGridCols - 1) * kColorSwatchGap;
+    const int gridX0 = x + (outerW - kGridWidth) / 2;
     for (int row = 0; row < kColorGridRows; ++row)
     {
         for (int col = 0; col < kColorGridCols; ++col)
@@ -1843,7 +1898,9 @@ void RetroUi::DrawColorDialog(ScreenBuffer& buffer, const EditorUiState& state)
         }
     }
 
-    const char* hint = "[Arrows] Move  [Enter] Apply  [Esc] Cancel";
+    // Hint string MUST match what HitTestColorDialog passes to TokenAt, or
+    // the hit-test won't line up with the drawn brackets.
+    const char* hint = "[Enter] Apply  [Esc] Cancel";
     int hintLen = static_cast<int>(std::strlen(hint));
     int hintX = x + (outerW - hintLen) / 2;
     if (hintX < x + 1) hintX = x + 1;
@@ -1860,11 +1917,15 @@ RetroUi::ColorDialogClick RetroUi::HitTestColorDialog(int cellCol, int cellRow,
     int relRow = cellRow - r.y;
     int relCol = cellCol - r.x;
 
+    // Mirror the centering math used in DrawColorDialog.
+    constexpr int kGridWidth =
+        kColorGridCols * kColorSwatchW + (kColorGridCols - 1) * kColorSwatchGap;
+    const int gridRelX = (r.w - kGridWidth) / 2;
+
     if (relRow >= kColorGridTopRow && relRow < kColorGridTopRow + kColorGridRows)
     {
         int gridRow = relRow - kColorGridTopRow;
-        // Grid cells inside the box; first swatch starts at relCol 1.
-        int xWithin = relCol - 1;
+        int xWithin = relCol - gridRelX;
         if (xWithin >= 0)
         {
             int slot = xWithin / (kColorSwatchW + kColorSwatchGap);
@@ -1883,7 +1944,12 @@ RetroUi::ColorDialogClick RetroUi::HitTestColorDialog(int cellCol, int cellRow,
     }
     if (relRow == r.h - 2)
     {
-        std::string tok = TokenAt("[Enter] Apply  [Esc] Cancel", r.x, cellCol);
+        // Hint string + start column MUST match DrawColorDialog.
+        const char* hint = "[Enter] Apply  [Esc] Cancel";
+        int hintLen = static_cast<int>(std::strlen(hint));
+        int hintStartCol = r.x + (r.w - hintLen) / 2;
+        if (hintStartCol < r.x + 1) hintStartCol = r.x + 1;
+        std::string tok = TokenAt(hint, hintStartCol, cellCol);
         if (tok == "ENTER") out.hit = ColorHit::OkHint;
         else if (tok == "ESC") out.hit = ColorHit::CancelHint;
     }
