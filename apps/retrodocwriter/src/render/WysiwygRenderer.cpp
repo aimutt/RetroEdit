@@ -300,7 +300,9 @@ static void BuildLayoutPass(LayoutPass& out,
                             Color themeNormalText,
                             int usableW,
                             std::function<GlyphCache*(FontFace, int)> cacheFor,
-                            std::function<double(FontFace, int, unsigned int)> subpxFor)
+                            std::function<double(FontFace, int, unsigned int)> subpxFor,
+                            const std::vector<WysiwygRenderer::MisspelledSpan>* misspells = nullptr,
+                            Color misspelledColor = Color{})
 {
     int n = buf.LineCount();
     out.chars.clear();
@@ -331,6 +333,23 @@ static void BuildLayoutPass(LayoutPass& out,
                                        : static_cast<double>(cr.advance);
             cr.lineHeight  = cache ? cache->LineHeight() : ptSz;
             cr.color       = ResolveColor(f, themeNormalText);
+            // Misspell override — applied AFTER ResolveColor so explicit
+            // per-char colors are kept on misspelled chars too (they just
+            // get retinted). The per-char selection path in Draw still
+            // wins at glyph-paint time, so selected text doesn't inherit
+            // the misspell tint.
+            if (misspells)
+            {
+                const int col = static_cast<int>(c);
+                for (const auto& s : *misspells)
+                {
+                    if (s.row == li && col >= s.col && col < s.col + s.len)
+                    {
+                        cr.color = misspelledColor;
+                        break;
+                    }
+                }
+            }
             // Highlight: only set when format.highlight is an explicit
             // palette index. Inherit/OOB → no highlight rect drawn.
             cr.hasHighlight = false;
@@ -506,7 +525,9 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
                     [&](FontFace f, int p, unsigned int cp) {
                         int px = std::max(1, (p * dpi + 36) / 72);
                         return SubpxAdvance(f, px, cp);
-                    });
+                    },
+                    ctx.misspelledSpans.empty() ? nullptr : &ctx.misspelledSpans,
+                    m_theme.misspelledText);
 
     int pageX = ctx.editorAreaPxX + (ctx.editorAreaPxW - pageW) / 2;
     if (pageX < ctx.editorAreaPxX) pageX = ctx.editorAreaPxX;

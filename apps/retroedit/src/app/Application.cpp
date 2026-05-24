@@ -622,6 +622,41 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
 
 void Application::HandlePromptKeyDown(const SDL_KeyboardEvent& key)
 {
+    // Ctrl+V — paste clipboard into the active text-input modal's
+    // m_promptText buffer. The six modals listed below all share that
+    // buffer; the Find dialog additionally has a checkbox alongside the
+    // input field, so only paste when its focus is on the input. Multi-
+    // line clipboard content is folded to spaces because these are all
+    // single-line input fields.
+    if ((key.mod & SDL_KMOD_CTRL) != 0 && key.scancode == SDL_SCANCODE_V)
+    {
+        const bool isTextInput =
+            m_promptMode == PromptMode::Open
+         || m_promptMode == PromptMode::SaveAs
+         || m_promptMode == PromptMode::Find
+         || m_promptMode == PromptMode::AddWordDialog
+         || m_promptMode == PromptMode::RemoveWordDialog
+         || m_promptMode == PromptMode::CheckWordDialog;
+        if (isTextInput)
+        {
+            const bool focusOnInput =
+                (m_promptMode != PromptMode::Find) || (m_findDialogFocus == 0);
+            if (focusOnInput && SDL_HasClipboardText())
+            {
+                char* raw = SDL_GetClipboardText();
+                if (raw)
+                {
+                    std::string s(raw);
+                    SDL_free(raw);
+                    for (char& c : s) if (c == '\r' || c == '\n') c = ' ';
+                    m_promptText += s;
+                    if (m_promptMode == PromptMode::Find) m_findQuery = m_promptText;
+                }
+            }
+            return;
+        }
+    }
+
     // Confirm dialogs all share Y/N/Esc semantics — keyboard path delegates to
     // the same ResolveConfirmYes / ResolveConfirmNo helpers used by the mouse
     // dispatcher so the two paths can't diverge.
@@ -2802,6 +2837,7 @@ void Application::Render()
     uiState.themeDialogActive    = (m_promptMode == PromptMode::ThemeDialog);
     uiState.themeDialogFocusIdx  = m_themeDialogFocusIdx;
     uiState.themeDialogActiveIdx = static_cast<int>(m_themeName);
+    uiState.themeCount           = ThemeCount();
 
     // Editor options
     uiState.wordWrap = m_wordWrap;

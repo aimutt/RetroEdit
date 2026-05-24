@@ -33,6 +33,8 @@ public:
     WysiwygRenderer(SDL_Renderer* sdl, const Theme& theme);
     ~WysiwygRenderer();
 
+    struct MisspelledSpan { int row; int col; int len; };
+
     struct DrawContext
     {
         const TextBuffer* buffer = nullptr;
@@ -69,6 +71,15 @@ public:
         // moving from a 24pt paragraph to a 12pt one shrinks the cursor.
         FontFace insertFace      = FontFace::CascadiaMono;
         int      insertPointSize = 16;
+
+        // Misspelled spans (highlightMisspelled gate already applied by
+        // caller). Each entry is a contiguous run of misspelled chars on a
+        // single buffer row. BuildLayoutPass overrides cr.color =
+        // m_theme.misspelledText for chars whose (row, col) falls in any
+        // span; the per-char selection path in Draw still wins at the
+        // glyph-paint stage so selected text doesn't inherit the misspell
+        // tint.
+        std::vector<MisspelledSpan> misspelledSpans;
     };
 
     void Draw(const DrawContext& ctx);

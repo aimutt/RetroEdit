@@ -58,6 +58,10 @@ struct EditorUiState
     bool themeDialogActive   = false;
     int  themeDialogFocusIdx = 0;
     int  themeDialogActiveIdx = 0;
+    int  themeCount           = 0;    // ThemeCount() — needed so the
+                                      // RetroUi::Draw dispatcher can pass
+                                      // the right rect into the auto
+                                      // bounds-check helper.
 
     // Text-color picker (Format > Text Color...). Also used for the
     // background-highlight picker; colorDialogIsHighlight flips the title
