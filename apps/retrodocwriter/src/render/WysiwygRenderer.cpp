@@ -489,8 +489,15 @@ int WysiwygRenderer::ClampScrollForCursor(const DrawContext& ctx)
         return cursorPage * pageStride;
 
     int viewport = ctx.viewportTopPx;
+    // Scrolling UP: snap so the viewport's top sits at the page boundary
+    // (cursorPage * pageStride) when the cursor is on the page's first
+    // content row — otherwise cursorAbsY == cursorPage * pageStride + mTop
+    // would put the cursor at the very top of the editor area and hide the
+    // page's top margin. Subtracting mTop generalizes this so any upward
+    // scroll leaves an mTop-pixel margin above the cursor row, which lands
+    // exactly on the page boundary when cursorY == 0.
     if (cursorAbsY < viewport)
-        viewport = cursorAbsY;
+        viewport = std::max(0, cursorAbsY - mTop);
     if (cursorAbsY + cursorH > viewport + ctx.editorAreaPxH)
         viewport = cursorAbsY + cursorH - ctx.editorAreaPxH;
     if (viewport < 0) viewport = 0;
