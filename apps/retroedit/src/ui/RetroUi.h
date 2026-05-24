@@ -55,6 +55,10 @@ struct EditorUiState
     bool themeDialogActive   = false;
     int  themeDialogFocusIdx = 0;     // highlighted row
     int  themeDialogActiveIdx = 0;    // currently-applied theme
+    int  themeCount           = 0;    // ThemeCount() — needed so the
+                                      // RetroUi::Draw dispatcher can pass
+                                      // the right rect into the auto
+                                      // bounds-check helper.
 
     // Editor options
     bool wordWrap = false;

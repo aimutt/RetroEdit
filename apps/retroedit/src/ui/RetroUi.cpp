@@ -44,8 +44,8 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
     if (state.themeDialogActive)
     {
         DrawThemeDialog(buffer, state);
-        // ThemeDialog rect depends on theme count which we don't have here;
-        // skip the check rather than guess.
+        CheckDialogBoundsRight(buffer,
+            ThemeDialogRect(buffer.Columns(), state.themeCount), "ThemeDialog");
     }
 
     if (state.wordCountDialogActive)
@@ -1548,7 +1548,10 @@ void RetroUi::DrawThemeDialog(ScreenBuffer& buffer, const EditorUiState& state)
         buffer.WriteText(x + 1, rowY, label, rowFg, rowBg);
     }
 
-    const char* hint = "[Up/Down] Move  [Enter] Apply  [Esc] Cancel";
+    // Hint string MUST match what HitTestThemeDialog passes to TokenAt, or
+    // the bracket hit-zones won't line up. The 27-char form fits comfortably
+    // inside the 36-cell outer width with ~5 cells of padding.
+    const char* hint = "[Enter] Apply  [Esc] Cancel";
     int hintLen = static_cast<int>(std::strlen(hint));
     int hintX = x + (outerWidth - hintLen) / 2;
     if (hintX < x + 1) hintX = x + 1;
@@ -1574,7 +1577,12 @@ RetroUi::ThemeDialogClick RetroUi::HitTestThemeDialog(int cellCol, int cellRow,
     }
     if (relRow == r.h - 2)
     {
-        std::string tok = TokenAt("[Enter] Apply  [Esc] Cancel", r.x, cellCol);
+        // Hint string + start column MUST match DrawThemeDialog.
+        const char* hint = "[Enter] Apply  [Esc] Cancel";
+        int hintLen = static_cast<int>(std::strlen(hint));
+        int hintStartCol = r.x + (r.w - hintLen) / 2;
+        if (hintStartCol < r.x + 1) hintStartCol = r.x + 1;
+        std::string tok = TokenAt(hint, hintStartCol, cellCol);
         if (tok == "ENTER") out.hit = ThemeHit::OkHint;
         else if (tok == "ESC") out.hit = ThemeHit::CancelHint;
     }
