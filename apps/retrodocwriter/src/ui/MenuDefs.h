@@ -50,11 +50,13 @@ inline const std::vector<MenuDef>& GetMenuDefs()
             { "Find...",      "^F"   },
         }},
         { "Format", 13, {
-            { "Bold",          "^B" },   // shortcut column shows On/Off at draw time
-            { "Italic",        "^I" },
-            { "Underline",     "^U" },
-            { "Strikethrough", ""   },
-            { "Text Color...", ""   },
+            { "Bold",                "^B"     },   // shortcut column shows On/Off at draw time
+            { "Italic",              "^I"     },
+            { "Underline",           "^U"     },
+            { "Strikethrough",       ""       },
+            { "Text Color...",       ""       },
+            { "Highlight Color...",  ""       },
+            { "Insert Page Break",   "^Enter" },
         }},
         { "Search", 22, {
             { "Find...",      "^F"   },

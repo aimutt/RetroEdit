@@ -244,7 +244,7 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
     // Font picker — two-column navigation (Face | Size).
     if (m_promptMode == PromptMode::FontDialog)
     {
-        const int faceCount = FontFaceCount();
+        const int faceCount = FontFaceMonospaceCount();
         const int sizeCount = FontSizeCount();
         switch (key.scancode)
         {
@@ -790,7 +790,7 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
     // Font picker
     if (m_promptMode == PromptMode::FontDialog)
     {
-        const int faceCount = FontFaceCount();
+        const int faceCount = FontFaceMonospaceCount();
         const int sizeCount = FontSizeCount();
         auto rect = m_ui->FontDialogRect(m_screenColumns, faceCount, sizeCount);
         if (!rect.Contains(cellCol, cellRow))
@@ -2346,7 +2346,6 @@ void Application::ClosePrintDialog(bool commit)
     m_printRequest.documentName = m_document->DisplayName();
 
     m_printRequest.useDocumentFont      = false;
-    m_printRequest.overrideCharsPerLine = 0;
 
     m_promptMode    = PromptMode::None;
     m_statusMessage = "Printing...";

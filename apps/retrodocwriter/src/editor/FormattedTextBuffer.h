@@ -34,15 +34,27 @@ public:
     uint8_t            StyleAt(int row, int col)    const { return FormatAt(row, col).style; }
     uint8_t            FaceAt (int row, int col)    const { return FormatAt(row, col).face;  }
     uint8_t            SizeAt (int row, int col)    const { return FormatAt(row, col).size;  }
-    // True if any character carries a non-default style/face/size.
+    // Per-row: true when this row should start on a new printed/rendered
+    // page. Inserted by Ctrl+Enter / Format > Insert Page Break. Read by
+    // the pagination loop in WysiwygRenderer and Print.cpp.
+    bool               PageBreakBefore(int row)     const;
+    void               SetPageBreakBefore(int row, bool on);
+    const std::vector<bool>& PageBreaks()           const { return m_pageBreakBefore; }
+    // True if any character carries a non-default style/face/size, or any
+    // row carries a page-break-before flag.
     bool               HasAnyFormatting()            const;
 
     // Bulk replacement -----------------------------------------------------
     // Replace text + format layers in one shot. Sizes must match: formats
     // must have the same shape (one inner vector per line, sized identically
-    // to the corresponding string).
+    // to the corresponding string). Page-break flags reset to false.
     void SetLines(std::vector<std::string> lines,
                   std::vector<std::vector<CharFormat>> formats);
+    // Overload that also restores the per-row page-break-before vector.
+    // Used by the RTF reader to round-trip \page markers.
+    void SetLines(std::vector<std::string> lines,
+                  std::vector<std::vector<CharFormat>> formats,
+                  std::vector<bool> pageBreakBefore);
     // Convenience: replace text and reset every character's format to
     // default (style=0, face=Inherit, size=Inherit).
     void SetLinesPlain(std::vector<std::string> lines);
@@ -84,6 +96,9 @@ public:
     void SetColorInRange(int startRow, int startCol,
                          int endRow,   int endCol,
                          uint8_t colorIdx);
+    void SetHighlightInRange(int startRow, int startCol,
+                             int endRow,   int endCol,
+                             uint8_t highlightIdx);
     // Zero out style and reset face/size to Inherit across the entire
     // buffer (used when "flatten and save as plain text").
     void FlattenAllStyles();
@@ -96,4 +111,5 @@ private:
 
     TextBuffer                              m_text;
     std::vector<std::vector<CharFormat>>    m_formats;
+    std::vector<bool>                       m_pageBreakBefore;
 };

@@ -36,14 +36,6 @@ struct PrintRequest
     int               pointSize       = 10;
     bool              bold            = false;
 
-    // When > 0, the printer uses this chars-per-line value instead of
-    // measuring its own character width. Set by Application when WYSIWYG
-    // is on so the print wrap matches the on-screen wrap exactly (both
-    // are derived from the same DPI-independent ComputeCharsPerLine call).
-    // Ignored when `formats` is non-null (the formatted path uses
-    // pixel-based wrap with per-char advance).
-    int               overrideCharsPerLine = 0;
-
     // Optional per-character formatting parallel to `buffer`. When non-
     // null, the print path switches GDI fonts per-run to honor style /
     // face / size from each CharFormat. Inherit-sentinel face/size falls
@@ -51,6 +43,11 @@ struct PrintRequest
     // above). When null, every character prints with the single document
     // font (Phase 2 behavior).
     const std::vector<std::vector<CharFormat>>* formats = nullptr;
+
+    // Optional per-row page-break-before flags parallel to `buffer`.
+    // When set on row N, the print path advances to a new page before
+    // emitting that row's first segment. Null = no forced page breaks.
+    const std::vector<bool>* pageBreakBefore = nullptr;
 };
 
 // Returns the installed printers. First entry is the system default (or the

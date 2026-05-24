@@ -57,11 +57,14 @@ struct EditorUiState
     int  themeDialogFocusIdx = 0;
     int  themeDialogActiveIdx = 0;
 
-    // Text-color picker (Format > Text Color...)
-    bool colorDialogActive   = false;
-    int  colorDialogFocusIdx = 0;
+    // Text-color picker (Format > Text Color...). Also used for the
+    // background-highlight picker; colorDialogIsHighlight flips the title
+    // and the active-swatch indicator's data source.
+    bool colorDialogActive    = false;
+    bool colorDialogIsHighlight = false;
+    int  colorDialogFocusIdx  = 0;
     // -1 = "no override active" (Inherit), else current palette index
-    int  colorDialogCurrent  = -1;
+    int  colorDialogCurrent   = -1;
 
     // Editor options
     bool wordWrap = false;
@@ -94,8 +97,7 @@ struct EditorUiState
     int         printOrientation   = 0;  // 0=Portrait, 1=Landscape
     int         printFocusField    = 0;  // mirror PrintField as int
 
-    // WYSIWYG mode + Margins dialog
-    bool        wysiwygEnabled      = false; // controls whether DrawEditorArea is skipped
+    // Margins dialog
     bool        marginsDialogActive = false;
     std::string marginEditText[4];          // top, bottom, left, right
     int         marginFocusIdx      = 0;
@@ -125,8 +127,7 @@ public:
     int HitTestDropdownItem(int menuIdx, int cellCol, int cellRow,
                             int screenColumns,
                             bool wordWrap, bool showWordCount,
-                            bool spellCheckEnabled, bool highlightMisspelled,
-                            bool wysiwygEnabled) const;
+                            bool spellCheckEnabled, bool highlightMisspelled) const;
 
     // Dialog hit-testing.
     // Each dialog has its own geometry, so each gets a dedicated hit-tester

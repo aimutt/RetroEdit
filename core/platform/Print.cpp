@@ -118,7 +118,9 @@ namespace
         int      advance;
         int      lineHeight;
         uint8_t  style;
-        COLORREF color;   // RGB for SetTextColor; default = black
+        COLORREF color;     // RGB for SetTextColor; default = black
+        bool     hasHighlight;
+        COLORREF highlight; // only valid when hasHighlight (RGB)
     };
 
     struct PrintSegment { int startCol; int endCol; int height; };
@@ -343,12 +345,11 @@ std::string PrintDocument(const TextBuffer& buffer, const PrintRequest& req)
     int       usableWidth  = std::max(0, usableRight  - usableLeft);
     int       usableHeight = std::max(0, usableBottom - usableTop);
 
-    // Use the caller-supplied chars-per-line when set (WYSIWYG mode passes
-    // its DPI-independent value so the print wrap matches what the user sees
-    // on screen). Otherwise fall back to GDI's measurement.
-    int charsPerLine   = (req.overrideCharsPerLine > 0)
-                         ? req.overrideCharsPerLine
-                         : std::max(1, usableWidth  / charWidth);
+    // Plain-text (formats == nullptr) print path is monospace-only — chars
+    // per line comes from GDI's 'M' measurement. The formatted path
+    // (PrintDocumentFormatted) does per-glyph pixel wrap and supports
+    // proportional fonts.
+    int charsPerLine   = std::max(1, usableWidth / charWidth);
     int linesPerPage   = std::max(1, (usableHeight - lineHeight) / lineHeight); // -1 for footer
     // Reserve the very bottom row for the footer.
     const int footerY = usableTop + linesPerPage * lineHeight;
@@ -526,10 +527,21 @@ static std::string PrintDocumentFormatted(const TextBuffer& buffer,
         return FormatLastError("CreateDC failed");
     }
 
-    const int horzRes = GetDeviceCaps(hdc, HORZRES);
-    const int vertRes = GetDeviceCaps(hdc, VERTRES);
-    const int dpiX    = GetDeviceCaps(hdc, LOGPIXELSX);
-    const int dpiY    = GetDeviceCaps(hdc, LOGPIXELSY);
+    // The user's margins are measured from the *physical* page edge so
+    // the printed wrap matches what RetroDocWriter draws on screen
+    // (which uses the full 8.5" × 11" page). GDI's device origin (0,0)
+    // is the top-left of the printable area, not the physical page, so
+    // we offset by PHYSICALOFFSETX/Y when computing where on the device
+    // surface the user's margins land. HORZRES/VERTRES (the printable
+    // area's pixel size) are kept only as a safety clamp.
+    const int physW    = GetDeviceCaps(hdc, PHYSICALWIDTH);
+    const int physH    = GetDeviceCaps(hdc, PHYSICALHEIGHT);
+    const int physOffX = GetDeviceCaps(hdc, PHYSICALOFFSETX);
+    const int physOffY = GetDeviceCaps(hdc, PHYSICALOFFSETY);
+    const int horzRes  = GetDeviceCaps(hdc, HORZRES);
+    const int vertRes  = GetDeviceCaps(hdc, VERTRES);
+    const int dpiX     = GetDeviceCaps(hdc, LOGPIXELSX);
+    const int dpiY     = GetDeviceCaps(hdc, LOGPIXELSY);
 
     auto clampMargin = [](double v) {
         if (v < 0.0) v = 0.0;
@@ -541,10 +553,15 @@ static std::string PrintDocumentFormatted(const TextBuffer& buffer,
     const int marginLeftPx   = static_cast<int>(clampMargin(req.margins.leftIn)   * dpiX);
     const int marginRightPx  = static_cast<int>(clampMargin(req.margins.rightIn)  * dpiX);
 
-    const int usableLeft   = marginLeftPx;
-    const int usableTop    = marginTopPx;
-    const int usableRight  = horzRes - marginRightPx;
-    const int usableBottom = vertRes - marginBottomPx;
+    // Device coordinates of the user's content area. usableLeft can be
+    // negative if the user margin is smaller than the printer's hardware
+    // margin — clamp to 0 (the leftmost printable column).
+    int usableLeft   = std::max(0, marginLeftPx - physOffX);
+    int usableTop    = std::max(0, marginTopPx  - physOffY);
+    int usableRight  = std::min(horzRes,
+                                physW  - marginRightPx  - physOffX);
+    int usableBottom = std::min(vertRes,
+                                physH  - marginBottomPx - physOffY);
     const int usableWidth  = std::max(1, usableRight  - usableLeft);
     const int usableHeight = std::max(1, usableBottom - usableTop);
 
@@ -690,7 +707,16 @@ static std::string PrintDocumentFormatted(const TextBuffer& buffer,
                 Color pc = Palette::ColorAt(f.color);
                 cref = RGB(pc.r, pc.g, pc.b);
             }
-            chars[li].push_back({ ch, font, adv, lastLineHeight, f.style, cref });
+            bool     hasHl   = false;
+            COLORREF hlRef   = RGB(255, 255, 255);
+            if (f.highlight != CharFormat::Inherit && f.highlight < Palette::kCount)
+            {
+                Color ph = Palette::ColorAt(f.highlight);
+                hasHl    = true;
+                hlRef    = RGB(ph.r, ph.g, ph.b);
+            }
+            chars[li].push_back({ ch, font, adv, lastLineHeight, f.style,
+                                  cref, hasHl, hlRef });
         }
     }
 
@@ -708,6 +734,14 @@ static std::string PrintDocumentFormatted(const TextBuffer& buffer,
     int yInPage = 0;
     for (int li = 0; li < buffer.LineCount(); ++li)
     {
+        // Forced page break (Ctrl+Enter / RTF \page).
+        if (li > 0 && req.pageBreakBefore
+            && li < static_cast<int>(req.pageBreakBefore->size())
+            && (*req.pageBreakBefore)[li])
+        {
+            ++curPage;
+            yInPage = 0;
+        }
         for (size_t s = 0; s < segments[li].size(); ++s)
         {
             int h = segments[li][s].height;
@@ -779,28 +813,53 @@ static std::string PrintDocumentFormatted(const TextBuffer& buffer,
         const auto& lineChars = chars[ps.li];
         int x = usableLeft;
         int y = usableTop + ps.yInPage;
-        // Group consecutive chars by (font, color) for fewer SelectObject
-        // and SetTextColor calls. Both must match within a group so a single
-        // TextOutA renders the run with the right face/size/style/color.
+        // Group consecutive chars by (font, color, highlight) so we make
+        // one SelectObject / SetTextColor / FillRect+TextOutA call per
+        // run. Highlight rect is painted underneath each run when set.
         int groupStart = seg.startCol;
         while (groupStart < seg.endCol)
         {
-            HFONT    groupFont  = lineChars[groupStart].font;
-            COLORREF groupColor = lineChars[groupStart].color;
+            HFONT    groupFont      = lineChars[groupStart].font;
+            COLORREF groupColor     = lineChars[groupStart].color;
+            bool     groupHasHl     = lineChars[groupStart].hasHighlight;
+            COLORREF groupHlColor   = lineChars[groupStart].highlight;
             int groupEnd = groupStart + 1;
             while (groupEnd < seg.endCol
-                   && lineChars[groupEnd].font  == groupFont
-                   && lineChars[groupEnd].color == groupColor)
+                   && lineChars[groupEnd].font          == groupFont
+                   && lineChars[groupEnd].color         == groupColor
+                   && lineChars[groupEnd].hasHighlight  == groupHasHl
+                   && (!groupHasHl
+                       || lineChars[groupEnd].highlight == groupHlColor))
                 ++groupEnd;
+
+            // Width of the run for the highlight rect.
+            int groupWidth = 0;
+            for (int c = groupStart; c < groupEnd; ++c)
+                groupWidth += lineChars[c].advance;
+
+            if (groupHasHl && groupWidth > 0)
+            {
+                HBRUSH brush = CreateSolidBrush(groupHlColor);
+                if (brush)
+                {
+                    RECT bg{ x, y, x + groupWidth,
+                             y + lineChars[groupStart].lineHeight };
+                    FillRect(hdc, &bg, brush);
+                    DeleteObject(brush);
+                }
+            }
+
             SelectObject(hdc, groupFont);
             SetTextColor(hdc, groupColor);
             std::string text;
             text.reserve(static_cast<size_t>(groupEnd - groupStart));
             for (int c = groupStart; c < groupEnd; ++c)
                 text.push_back(lineChars[c].ch);
+            // Transparent background so TextOutA doesn't over-paint the
+            // highlight rect we just laid down.
+            SetBkMode(hdc, TRANSPARENT);
             TextOutA(hdc, x, y, text.c_str(), static_cast<int>(text.size()));
-            for (int c = groupStart; c < groupEnd; ++c)
-                x += lineChars[c].advance;
+            x += groupWidth;
             groupStart = groupEnd;
         }
     }

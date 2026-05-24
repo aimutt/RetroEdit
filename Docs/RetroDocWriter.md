@@ -9,7 +9,7 @@ RetroEdit is a plain-text editor — one buffer of `std::string` lines, no per-c
 - **RetroEdit** — pure plain-text editor. Always character-cell rendering. No pages, no margins, no formatting.
 - **RetroDocWriter** — always-on WYSIWYG document writer. Proportional layout on a US Letter page, per-character bold/italic/underline/strikethrough, native RTF I/O.
 
-## Current state (Phase 1 + Phase 2 + Phase 3 + Phase 4 shipped)
+## Current state (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6 shipped)
 
 **Phase 1 — layout-only WYSIWYG:**
 
@@ -46,17 +46,27 @@ RetroEdit is a plain-text editor — one buffer of `std::string` lines, no per-c
 - **RTF round-trip.** The writer always emits a 16-entry `\colortbl` (plus the leading "auto" semicolon), then differential `\cfN` per character run. The reader parses third-party color tables by mapping each `\red\green\blue` triple to the nearest palette index via `Palette::NearestIndex`, so a Word document with arbitrary RGB colors loads with a sensible approximation.
 - **Style-aware print path** now also honors color: each `(font, color)` group calls `SetTextColor` before its `TextOutA`. Inherit chars print as `RGB(0,0,0)` regardless of screen theme — paper is white.
 
-**Cursor navigation caveat:** `Application::NavigationWrapWidth` still computes Up/Down arrow step from the document's default font's chars-per-line. Heading lines (mixed sizes) may step at a column that doesn't match the visual wrap — keyboard navigation will look off by a few columns inside heading runs. Defer to a future phase if it bites.
+**Phase 5 — cursor-nav fix + highlight color + page breaks:**
 
-**Explicitly not yet shipped (Phase 5+):**
+- **Pixel-accurate cursor navigation** in mixed-size paragraphs. `WysiwygRenderer` exposes a public `ComputeVisualLayout` returning one `VisualLine` per wrapped row with `{bufferRow, startCol, endCol, charXs}`. `Application::MoveCursorUp` / `MoveCursorDown` use it to find the cursor's pixel x-position in the current visual line, then pick the column in the adjacent visual line whose pixel x is closest. A 24pt heading followed by 12pt body now steps Up/Down at the correct visual column. RetroEdit's plain-text path is unchanged (still uses the cheaper column-based fallback).
+- **Per-character background highlight color** (Format > Highlight Color..., Alt+R, no shortcut). `CharFormat` gains a `highlight` byte indexed into the same 16-color palette. The Format menu's existing color picker is reused with a flag (`colorDialogIsHighlight`) that flips the title between "Text Color" and "Highlight Color". Renderer paints the per-char highlight `FillRect` underneath each glyph; selection's reverse-video still wins on top. RTF round-trips via differential `\highlightN`.
+- **Page breaks.** Per-row metadata (`std::vector<bool> m_pageBreakBefore` on `FormattedTextBuffer`) tracks "this row starts on a new page". Inserted by **Ctrl+Enter** or `Format > Insert Page Break`. The pagination greedy-pack loops in both `WysiwygRenderer` (screen) and `Print.cpp` (paper) honor the flag and force a new page before that row's first segment. RTF round-trips via `\page` (writer emits `\par\n\page\n` between rows; reader sets a `pendingPageBreak` that transfers onto the next opened line).
+- **Print path highlight rects.** The formatted print path now groups by `(font, color, highlight)`; for each group it paints a `FillRect` background covering the run's width before calling `TextOutA` with `SetBkMode(TRANSPARENT)` so the text sits cleanly over the highlight.
 
-- Background highlight color (RTF `\highlightN`)
-- Custom-RGB color picker (Phase 4 ships only the 16 fixed palette colors)
-- Page breaks (text still flows as one tall page)
-- Rulers, margin guides, headers/footers
-- Print preview pane
+**Phase 6 — proportional fonts + WYSIWYG-always:**
+
+- **Proportional fonts.** Bundled four OFL-licensed proportional families alongside the existing monospace set: **EB Garamond** (serif), **Source Serif 4** (serif), **Source Sans 3** (sans-serif), **Open Sans** (sans-serif). Each ships Regular + Bold. The Font dialog lists them next to the monospace faces; picking one re-renders the document with per-glyph variable advances, so wrapped lines visually fill the page margin-to-margin in the way modern document editors do (where monospace had a fixed gap equal to whatever portion of one fixed-width cell didn't fit). The `WysiwygRenderer` already laid out per-glyph (Phase 3), so all the renderer-side work was already done — Phase 6 added the assets, the `FontFace` enum entries (`EBGaramond`, `EBGaramondBold`, `SourceSerif`, `SourceSerifBold`, `SourceSans`, `SourceSansBold`, `OpenSans`, `OpenSansBold`), a `FontFaceIsMonospace` predicate, and a `FontFaceMonospaceCount` helper used by RetroEdit's font dialog to keep its picker monospace-only.
+- **Removal of the WYSIWYG toggle.** Before the product split, RetroDocWriter inherited a per-document `m_wysiwygEnabled` flag from RetroEdit that could turn the proportional view off and fall back to the cell grid. With RetroDocWriter now being **the WYSIWYG product**, that toggle is dead weight — Phase 6 removed the field, the `ToggleWysiwyg` method, the cell-grid cursor branch, the sidecar `wysiwyg` key (still parsed silently on load for backward compat, no longer written), and the conditional in `Render` / `NavigationWrapWidth` / `MoveCursorUp` / `MoveCursorDown` / `ClosePrintDialog`. The non-formatted (`formats == nullptr`) print path stays in `Print.cpp` solely for RetroEdit's monospace use.
+- **Print path per-glyph wrap (already there since Phase 3).** The formatted print path uses `GetCharWidth32A` per glyph and wraps in pixels — proportional fonts print at the same wrap points as the screen with no further changes. The legacy `overrideCharsPerLine` field on `PrintRequest` (a bridge from when on-screen used per-glyph and print used `usableWidth / 'M'.cx`) is gone — both paths now derive their own wrap natively.
+
+**Explicitly not yet shipped (Phase 7+):**
+
+- Line justification (distributing inter-word whitespace to flush both edges)
+- Hanging punctuation / optical margin adjustment
+- Custom-RGB color picker (Phase 5 ships only the 16 fixed palette colors)
+- Headers / footers
+- Rulers, margin guides, print preview pane
 - Selectable page size (US Letter is hardcoded)
-- Pixel-accurate cursor-arrow navigation in mixed-size paragraphs (see caveat above)
 - Theme files in `assets/themes/*.ini` (themes remain hardcoded in `Theme.cpp`)
 
 ## Architecture (where things live)
@@ -79,7 +89,7 @@ apps/retrodocwriter/src/
   editor/RichFileDocument.*              load/save dispatcher: .rtf vs plain text
   editor/RtfWriter.*                     serialize FormattedTextBuffer to RTF subset
   editor/RtfReader.*                     parse RTF subset into FormattedTextBuffer
-  app/Application.*                      WYSIWYG-default Application (m_wysiwygEnabled = true)
+  app/Application.*                      Application (always WYSIWYG; no toggle)
   render/WysiwygRenderer.*               proportional layout, page rendering, per-char style
   ui/MenuDefs.h                          File / Edit / Format / Search / View / Page / Tools / Options / Help
   ui/RetroUi.*                           Menu + dialogs + status-bar B/I/U/S indicators
@@ -102,6 +112,8 @@ RetroDocWriter writes (and is guaranteed to round-trip) the following RTF contro
 | `\fs<N>`     | Font size in half-points (`\fs24` = 12 pt; header or per-run) |
 | `\colortbl`  | Color table; always 16 entries plus the leading "auto" semicolon |
 | `\cfN`       | Foreground color index (0 = auto / inherit; 1..16 = palette) |
+| `\highlightN`| Background highlight color index (0 = none; 1..16 = palette)   |
+| `\page`      | Force the next paragraph onto a new printed/rendered page      |
 | `\b` / `\b0` | Bold on / off                                          |
 | `\i` / `\i0` | Italic on / off                                        |
 | `\ul` / `\ulnone` | Underline on / off (also accepts `\ul0`)          |
@@ -138,7 +150,6 @@ A `.retroedit` sidecar written by RetroDocWriter looks like:
 ```
 word_wrap=false
 show_word_count=false
-wysiwyg=true
 margin_top=1.00
 margin_bottom=1.00
 margin_left=1.00
@@ -148,8 +159,10 @@ margin_right=1.00
 If the same file is opened in RetroEdit:
 
 - RetroEdit reads `word_wrap` and `show_word_count` (the keys it knows).
-- RetroEdit silently ignores `wysiwyg`, `margin_*` (unknown keys to it).
-- When RetroEdit saves the sidecar, it **loads the existing file first** so unknown keys round-trip untouched — the WYSIWYG state is preserved for the next time RetroDocWriter opens the same file.
+- RetroEdit silently ignores `margin_*` (unknown keys to it).
+- When RetroEdit saves the sidecar, it **loads the existing file first** so unknown keys round-trip untouched — RetroDocWriter's margins are preserved for the next time it opens the same file.
+
+Pre-Phase-6 sidecars may carry a legacy `wysiwyg=false` key. RetroDocWriter silently ignores it on load (the product is always WYSIWYG now) and stops emitting it on save — the key drops out of the sidecar on the next save.
 
 This works because `FileSettings` is a generic key/value store; see `core/editor/FileSettings.h`.
 

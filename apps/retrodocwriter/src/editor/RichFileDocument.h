@@ -1,5 +1,6 @@
 #pragma once
 #include "FormattedTextBuffer.h"
+#include "RtfWriter.h"
 #include "render/FontFace.h"
 #include <string>
 
@@ -23,10 +24,14 @@ public:
 
     bool Load(const std::string& path);
     // `font` and `pointSize` are baked into the RTF header when saving a
-    // .rtf file. Ignored when saving plain text. Callers pass the
-    // document's current font settings.
-    bool Save(FontFace font, int pointSize);
-    bool SaveAs(const std::string& path, FontFace font, int pointSize);
+    // .rtf file. `page` is the page geometry (paper size + margins) the
+    // doc was authored against — emitted into the RTF so external
+    // readers (LibreOffice, Word) wrap at the same column count as
+    // RetroDocWriter's on-screen view. All three are ignored when saving
+    // plain text.
+    bool Save(FontFace font, int pointSize, const RtfWriter::Page& page = {});
+    bool SaveAs(const std::string& path, FontFace font, int pointSize,
+                const RtfWriter::Page& page = {});
 
     const std::string& Filename()    const { return m_filename; }
     bool               IsDirty()     const { return m_dirty; }
@@ -53,7 +58,8 @@ private:
     bool LoadPlain(const std::string& path);
     bool LoadRtf  (const std::string& path);
     bool SavePlain(const std::string& path) const;
-    bool SaveRtf  (const std::string& path, FontFace font, int pointSize) const;
+    bool SaveRtf  (const std::string& path, FontFace font, int pointSize,
+                   const RtfWriter::Page& page) const;
 
     FormattedTextBuffer m_buffer;
     std::string         m_filename;

@@ -338,8 +338,10 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
         return;
     }
 
-    // Color picker — 4x4 grid (left/right/up/down navigate).
-    if (m_promptMode == PromptMode::ColorDialog)
+    // Color / Highlight picker — 4x4 grid (left/right/up/down navigate).
+    // Both prompts reuse the same dialog UI; only the commit target differs.
+    if (m_promptMode == PromptMode::ColorDialog
+        || m_promptMode == PromptMode::HighlightDialog)
     {
         constexpr int kCols = 4;
         const int total = Palette::kCount;
@@ -355,7 +357,10 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
                 if ((row + 1) * kCols + col < total) ++row;
                 break;
             case SDL_SCANCODE_RETURN:
-                ApplyColorDialogSelection();
+                if (m_promptMode == PromptMode::HighlightDialog)
+                    ApplyHighlightDialogSelection();
+                else
+                    ApplyColorDialogSelection();
                 return;
             case SDL_SCANCODE_ESCAPE:
                 m_promptMode    = PromptMode::None;
@@ -475,6 +480,11 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
 
         // --- Editing ---
         case SDL_SCANCODE_RETURN:
+            if (ctrl)
+            {
+                InsertPageBreak();
+                break;
+            }
             PushUndoBeforeEdit();
             if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
                 EraseSelection();
@@ -494,7 +504,7 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
             int endRow = 0, endCol = 0;
             m_document->Buffer().InsertText(m_cursor.column, m_cursor.row,
                                             "    ",
-                                            CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit, m_currentColor},
+                                            CharFormat{m_currentStyle, m_currentFace, m_currentSize, m_currentColor, m_currentHighlight},
                                             endRow, endCol);
             m_cursor.row    = endRow;
             m_cursor.column = endCol;
@@ -969,9 +979,16 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
         return true;
     }
 
-    // Color picker
-    if (m_promptMode == PromptMode::ColorDialog)
+    // Color / Highlight picker — same UI, different commit target.
+    if (m_promptMode == PromptMode::ColorDialog
+        || m_promptMode == PromptMode::HighlightDialog)
     {
+        const bool isHighlight = (m_promptMode == PromptMode::HighlightDialog);
+        auto applyClick = [&]() {
+            if (isHighlight) ApplyHighlightDialogSelection();
+            else             ApplyColorDialogSelection();
+        };
+
         auto rect = m_ui->ColorDialogRect(m_screenColumns);
         if (!rect.Contains(cellCol, cellRow))
         {
@@ -985,11 +1002,11 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
         {
             case RetroUi::ColorHit::Swatch:
                 m_colorDialogFocusIdx = click.index;
-                ApplyColorDialogSelection();
+                applyClick();
                 m_needsRedraw = true;
                 break;
             case RetroUi::ColorHit::OkHint:
-                ApplyColorDialogSelection();
+                applyClick();
                 m_needsRedraw = true;
                 break;
             case RetroUi::ColorHit::CancelHint:
@@ -1298,8 +1315,7 @@ void Application::HandleMouseDown(int cellCol, int cellRow, Uint8 button)
         int item = m_ui->HitTestDropdownItem(
             m_activeMenu, cellCol, cellRow, m_screenColumns,
             m_wordWrap, m_showWordCount,
-            m_spellCheckEnabled, m_highlightMisspelled,
-            m_wysiwygEnabled);
+            m_spellCheckEnabled, m_highlightMisspelled);
         if (item >= 0)
         {
             // ExecuteMenuItem already filters separators (empty label).
@@ -1350,8 +1366,7 @@ void Application::HandleMouseMotion(int cellCol, int cellRow)
         int item = m_ui->HitTestDropdownItem(
             m_activeMenu, cellCol, cellRow, m_screenColumns,
             m_wordWrap, m_showWordCount,
-            m_spellCheckEnabled, m_highlightMisspelled,
-            m_wysiwygEnabled);
+            m_spellCheckEnabled, m_highlightMisspelled);
         if (item >= 0 && item != m_activeItem)
         {
             // Skip separators — keep the previous highlighted item.
@@ -1417,7 +1432,7 @@ void Application::HandleTextInput(const char* text)
             }
             EnsureUndoBeforeInsert();
             m_document->Buffer().InsertChar(m_cursor.column, m_cursor.row, *p,
-                                            CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit, m_currentColor});
+                                            CharFormat{m_currentStyle, m_currentFace, m_currentSize, m_currentColor, m_currentHighlight});
             ++m_cursor.column;
             m_document->MarkDirty();
             UpdateWindowTitle();
@@ -1456,19 +1471,98 @@ void Application::UpdateSelection(bool shift)
 
 int Application::NavigationWrapWidth() const
 {
-    if (m_wysiwygEnabled)
+    return WysiwygRenderer::ComputeCharsPerLine(
+        m_fontSettings.face,
+        FontSizePoints(m_fontSettings.size),
+        m_margins.leftIn, m_margins.rightIn);
+}
+
+namespace
+{
+    // Finds the index in `layout` of the visual line containing (row, col).
+    // When col equals the segment's endCol AND that segment is not the
+    // last one for `row`, we treat the cursor as being at the start of the
+    // next segment — except at end-of-buffer-row, where it sits at the
+    // segment's tail.
+    int FindVisualLine(const std::vector<WysiwygRenderer::VisualLine>& layout,
+                       int row, int col)
     {
-        return WysiwygRenderer::ComputeCharsPerLine(
-            m_fontSettings.face,
-            FontSizePoints(m_fontSettings.size),
-            m_margins.leftIn, m_margins.rightIn);
+        int firstForRow = -1;
+        int lastForRow  = -1;
+        for (int i = 0; i < static_cast<int>(layout.size()); ++i)
+        {
+            if (layout[i].bufferRow == row)
+            {
+                if (firstForRow < 0) firstForRow = i;
+                lastForRow = i;
+            }
+            else if (firstForRow >= 0)
+            {
+                break;
+            }
+        }
+        if (firstForRow < 0) return -1;
+        for (int i = firstForRow; i <= lastForRow; ++i)
+        {
+            const auto& vl = layout[i];
+            if (col >= vl.startCol && col < vl.endCol) return i;
+            if (col == vl.endCol)
+            {
+                // Cursor at exact end of a non-last segment belongs to the
+                // current segment (consumed-space position); cursor at end
+                // of the last segment also belongs here.
+                return i;
+            }
+        }
+        return lastForRow;
     }
-    if (m_wordWrap) return m_screenColumns;
-    return 0; // no wrap — Up/Down skip whole buffer rows
+
+    // Returns the source column in `vl` whose pixel position is closest to
+    // targetX. Ties prefer the lower column.
+    int NearestColumnByX(const WysiwygRenderer::VisualLine& vl, int targetX)
+    {
+        int best     = vl.startCol;
+        int bestDist = -1;
+        for (int k = 0; k < static_cast<int>(vl.charXs.size()); ++k)
+        {
+            int dist = std::abs(vl.charXs[k] - targetX);
+            if (bestDist < 0 || dist < bestDist)
+            {
+                bestDist = dist;
+                best     = vl.startCol + k;
+            }
+        }
+        return best;
+    }
 }
 
 void Application::MoveCursorUp()
 {
+    // Use the renderer's actual visual layout so Up/Down lands at the
+    // correct visual column even in mixed-size or proportional paragraphs.
+    if (m_wysiwyg && m_document)
+    {
+        auto ctx    = BuildWysiwygDrawContext();
+        auto layout = m_wysiwyg->ComputeVisualLayout(ctx);
+        if (!layout.empty())
+        {
+            int v = FindVisualLine(layout, m_cursor.row, m_cursor.column);
+            if (v > 0)
+            {
+                int offsetInSeg = std::clamp(m_cursor.column - layout[v].startCol,
+                                             0,
+                                             static_cast<int>(layout[v].charXs.size()) - 1);
+                int targetX = layout[v].charXs[offsetInSeg];
+                const auto& prev = layout[v - 1];
+                m_cursor.row    = prev.bufferRow;
+                m_cursor.column = NearestColumnByX(prev, targetX);
+                ClampCursorToLine();
+                ScrollViewport();
+            }
+            return;
+        }
+    }
+
     int width = NavigationWrapWidth();
     if (width <= 0)
     {
@@ -1481,9 +1575,7 @@ void Application::MoveCursorUp()
         return;
     }
 
-    // Wrap-aware: move one display row up using the same wrap width that
-    // produces the visible layout (cell-grid width for word-wrap mode, or
-    // WYSIWYG chars-per-line for WYSIWYG mode).
+    // Wrap-aware (non-WYSIWYG, word-wrap mode): column-based fallback.
     const std::string& curLine = m_document->Buffer().Line(m_cursor.row);
     auto starts = ComputeWrapStarts(curLine, width);
     int  segIdx = WrapSegmentForColumn(starts, m_cursor.column);
@@ -1491,14 +1583,12 @@ void Application::MoveCursorUp()
 
     if (segIdx > 0)
     {
-        // Same buffer line, previous segment.
         int destStart = starts[segIdx - 1];
-        int destLen   = starts[segIdx] - destStart;       // includes consumed space
+        int destLen   = starts[segIdx] - destStart;
         m_cursor.column = destStart + std::min(offset, destLen);
     }
     else if (m_cursor.row > 0)
     {
-        // Previous buffer line, last segment.
         --m_cursor.row;
         const std::string& prevLine = m_document->Buffer().Line(m_cursor.row);
         auto prevStarts = ComputeWrapStarts(prevLine, width);
@@ -1513,6 +1603,29 @@ void Application::MoveCursorUp()
 
 void Application::MoveCursorDown()
 {
+    if (m_wysiwyg && m_document)
+    {
+        auto ctx    = BuildWysiwygDrawContext();
+        auto layout = m_wysiwyg->ComputeVisualLayout(ctx);
+        if (!layout.empty())
+        {
+            int v = FindVisualLine(layout, m_cursor.row, m_cursor.column);
+            if (v >= 0 && v + 1 < static_cast<int>(layout.size()))
+            {
+                int offsetInSeg = std::clamp(m_cursor.column - layout[v].startCol,
+                                             0,
+                                             static_cast<int>(layout[v].charXs.size()) - 1);
+                int targetX = layout[v].charXs[offsetInSeg];
+                const auto& next = layout[v + 1];
+                m_cursor.row    = next.bufferRow;
+                m_cursor.column = NearestColumnByX(next, targetX);
+                ClampCursorToLine();
+                ScrollViewport();
+            }
+            return;
+        }
+    }
+
     int width = NavigationWrapWidth();
     if (width <= 0)
     {
@@ -1525,7 +1638,6 @@ void Application::MoveCursorDown()
         return;
     }
 
-    // Wrap-aware: move one display row down.
     const std::string& curLine = m_document->Buffer().Line(m_cursor.row);
     auto starts = ComputeWrapStarts(curLine, width);
     int  segIdx = WrapSegmentForColumn(starts, m_cursor.column);
@@ -1533,7 +1645,6 @@ void Application::MoveCursorDown()
 
     if (segIdx + 1 < static_cast<int>(starts.size()))
     {
-        // Same buffer line, next segment.
         int destStart = starts[segIdx + 1];
         int destEnd   = (segIdx + 2 < static_cast<int>(starts.size()))
                         ? starts[segIdx + 2]
@@ -1543,7 +1654,6 @@ void Application::MoveCursorDown()
     }
     else if (m_cursor.row < m_document->Buffer().LineCount() - 1)
     {
-        // Next buffer line, first segment.
         ++m_cursor.row;
         const std::string& nextLine = m_document->Buffer().Line(m_cursor.row);
         auto nextStarts = ComputeWrapStarts(nextLine, width);
@@ -1602,7 +1712,7 @@ void Application::EnsureUndoBeforeInsert()
 
 void Application::ApplyUndoState(const RichUndoState& s)
 {
-    m_document->Buffer().SetLines(s.lines, s.formats);
+    m_document->Buffer().SetLines(s.lines, s.formats, s.pageBreaks);
     m_cursor.row    = s.cursorRow;
     m_cursor.column = s.cursorCol;
     m_selection.Clear();
@@ -1708,7 +1818,7 @@ void Application::PasteClipboard()
 
     int endRow = 0, endCol = 0;
     m_document->Buffer().InsertText(m_cursor.column, m_cursor.row, text,
-                                    CharFormat{m_currentStyle, CharFormat::Inherit, CharFormat::Inherit, m_currentColor},
+                                    CharFormat{m_currentStyle, m_currentFace, m_currentSize, m_currentColor, m_currentHighlight},
                                     endRow, endCol);
     m_cursor.row    = endRow;
     m_cursor.column = endCol;
@@ -1818,7 +1928,8 @@ void Application::CommitPrompt()
         {
             if (m_document->SaveAs(m_promptText,
                                    m_fontSettings.face,
-                                   FontSizePoints(m_fontSettings.size)))
+                                   FontSizePoints(m_fontSettings.size),
+                                   CurrentRtfPage()))
             {
                 WriteSidecarForCurrentDocument();
                 m_statusMessage = "Saved.";
@@ -1924,7 +2035,8 @@ bool Application::SaveDocument()
         return false;
     }
     if (m_document->Save(m_fontSettings.face,
-                         FontSizePoints(m_fontSettings.size)))
+                         FontSizePoints(m_fontSettings.size),
+                         CurrentRtfPage()))
     {
         WriteSidecarForCurrentDocument();
         m_statusMessage = "Saved.";
@@ -2051,6 +2163,8 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
                 case 2: ToggleUnderline();     break;
                 case 3: ToggleStrikethrough(); break;
                 case 4: OpenColorDialog();     break;
+                case 5: OpenHighlightDialog(); break;
+                case 6: InsertPageBreak();     break;
                 default: break;
             }
             break;
@@ -2176,12 +2290,19 @@ void Application::ScrollViewport()
 void Application::OpenFontDialog()
 {
     m_promptMode            = PromptMode::FontDialog;
-    // Seed the dialog from the selection's first char when a selection is
-    // active (so reopening the dialog after applying a per-run override
-    // reflects what's actually under the cursor). Inherit-sentinel falls
-    // back to the document default.
+    // Seed precedence:
+    //   1. First char of the active selection (so reopening the dialog
+    //      after pinning a face/size reflects what's actually selected).
+    //   2. m_currentFace / m_currentSize (the next-typed face/size set
+    //      by a previous no-selection dialog commit).
+    //   3. Document default (m_fontSettings) when neither is set.
     FontFace seedFace = m_fontSettings.face;
     FontSize seedSize = m_fontSettings.size;
+    if (m_currentFace != CharFormat::Inherit
+        && m_currentFace < static_cast<uint8_t>(FontFace::Count_))
+        seedFace = static_cast<FontFace>(m_currentFace);
+    if (m_currentSize != CharFormat::Inherit && m_currentSize < 4)
+        seedSize = FontSizeAt(static_cast<int>(m_currentSize));
     if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
     {
         int sr, sc, er, ec;
@@ -2203,11 +2324,15 @@ void Application::ApplyFontDialogSelection()
     FontSize size = FontSizeAt(m_fontDialogSizeIdx);
     m_promptMode = PromptMode::None;
 
-    // With a selection active, pin face+size to the selected range only
-    // (per-character overrides). Without a selection, the choice changes
-    // the document default — the existing behavior — and applies globally.
+    // Always update next-typed face/size so subsequent typing matches what
+    // the user just picked — even after pinning the same value to a
+    // selection.
+    m_currentFace = static_cast<uint8_t>(face);
+    m_currentSize = static_cast<uint8_t>(IndexOfFontSize(size));
+
     if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
     {
+        // With a selection active, pin face+size to the selected range.
         int sr, sc, er, ec;
         m_selection.GetRange(m_cursor.row, m_cursor.column, sr, sc, er, ec);
         PushUndoBeforeEdit();
@@ -2217,20 +2342,32 @@ void Application::ApplyFontDialogSelection()
             static_cast<uint8_t>(IndexOfFontSize(size)));
         m_document->MarkDirty();
         UpdateWindowTitle();
+
+        // If the selection covered the entire document (Ctrl+A then pick),
+        // also update the document default so the saved RTF carries the
+        // new face/size in `\deff` / `\fs` and reopens with that as the
+        // baseline — without this, every body char would emit an
+        // explicit `\fN/\fsN` override and a fresh insert at end-of-doc
+        // would inherit the old default instead of matching surrounding
+        // text.
+        const auto& tb = m_document->Buffer().Text();
+        int lastRow = tb.LineCount() - 1;
+        bool selCoversAll = (sr == 0 && sc == 0 && er == lastRow
+                             && ec == static_cast<int>(tb.LineLength(lastRow)));
+        if (selCoversAll && !(FontSettings{ face, size } == m_fontSettings))
+            ApplyFontSettings(FontSettings{ face, size });
+
         m_statusMessage = "Font applied to selection";
         return;
     }
 
-    FontSettings choice{ face, size };
-    if (!(choice == m_fontSettings))
-    {
-        ApplyFontSettings(choice);
-        m_statusMessage = "Font changed";
-    }
-    else
-    {
-        m_statusMessage = "Ready";
-    }
+    // No selection — the picked face/size affects only next-typed input
+    // (via the m_currentFace / m_currentSize fields set above). The
+    // document default (m_fontSettings) is left untouched so existing
+    // Inherit-face/size characters are not retroactively restyled. To
+    // restyle every character in the document, the user can press
+    // Ctrl+A (Select All) before opening the Font dialog.
+    m_statusMessage = std::string("Font (next-typed): ") + FontFaceName(face);
 }
 
 void Application::OpenThemeDialog()
@@ -2294,6 +2431,63 @@ void Application::ApplyColorDialogSelection()
     m_statusMessage = std::string("Color (next-typed): ") + Palette::NameAt(static_cast<uint8_t>(idx));
 }
 
+void Application::OpenHighlightDialog()
+{
+    m_promptMode = PromptMode::HighlightDialog;
+    uint8_t seed = m_currentHighlight;
+    if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
+    {
+        int sr, sc, er, ec;
+        m_selection.GetRange(m_cursor.row, m_cursor.column, sr, sc, er, ec);
+        uint8_t h = m_document->Buffer().FormatAt(sr, sc).highlight;
+        if (h != CharFormat::Inherit) seed = h;
+    }
+    if (seed == CharFormat::Inherit) seed = 11; // Yellow — the conventional default
+    m_colorDialogFocusIdx = std::clamp(static_cast<int>(seed), 0, Palette::kCount - 1);
+    m_statusMessage.clear();
+}
+
+void Application::ApplyHighlightDialogSelection()
+{
+    int idx = std::clamp(m_colorDialogFocusIdx, 0, Palette::kCount - 1);
+    m_promptMode = PromptMode::None;
+
+    if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
+    {
+        int sr, sc, er, ec;
+        m_selection.GetRange(m_cursor.row, m_cursor.column, sr, sc, er, ec);
+        PushUndoBeforeEdit();
+        m_document->Buffer().SetHighlightInRange(sr, sc, er, ec, static_cast<uint8_t>(idx));
+        m_document->MarkDirty();
+        UpdateWindowTitle();
+        m_statusMessage = std::string("Highlight: ") + Palette::NameAt(static_cast<uint8_t>(idx));
+        return;
+    }
+
+    m_currentHighlight = static_cast<uint8_t>(idx);
+    m_statusMessage = std::string("Highlight (next-typed): ") + Palette::NameAt(static_cast<uint8_t>(idx));
+}
+
+void Application::InsertPageBreak()
+{
+    // Ctrl+Enter / Format > Insert Page Break: split the current line at
+    // the cursor and set the new line's page-break-before flag. The
+    // pagination loop in WysiwygRenderer / Print respects the flag and
+    // starts that paragraph on a fresh page.
+    PushUndoBeforeEdit();
+    if (m_selection.active && !m_selection.IsEmpty(m_cursor.row, m_cursor.column))
+        EraseSelection();
+    m_document->Buffer().InsertNewline(m_cursor.column, m_cursor.row);
+    m_document->Buffer().SetPageBreakBefore(m_cursor.row + 1, true);
+    m_cursor.row    += 1;
+    m_cursor.column  = 0;
+    m_selection.Clear();
+    m_document->MarkDirty();
+    ScrollViewport();
+    UpdateWindowTitle();
+    m_statusMessage = "Page break inserted";
+}
+
 // Shared by the keyboard Y/N handlers and the mouse Yes/No clicks on confirm
 // dialogs. Reads m_promptMode to know which confirm is active, then resets it.
 void Application::ResolveConfirmYes()
@@ -2311,7 +2505,8 @@ void Application::ResolveConfirmYes()
                 StartSaveAsPrompt();
             }
             else if (m_document->Save(m_fontSettings.face,
-                                      FontSizePoints(m_fontSettings.size)))
+                                      FontSizePoints(m_fontSettings.size),
+                                      CurrentRtfPage()))
             {
                 WriteSidecarForCurrentDocument();
                 UpdateWindowTitle();
@@ -2373,7 +2568,8 @@ void Application::ResolveConfirmNo()
             // the next save round-trips correctly.
             m_document->Buffer().FlattenAllStyles();
             if (m_document->Save(m_fontSettings.face,
-                                 FontSizePoints(m_fontSettings.size)))
+                                 FontSizePoints(m_fontSettings.size),
+                                 CurrentRtfPage()))
             {
                 WriteSidecarForCurrentDocument();
                 m_statusMessage = "Saved as plain text (formatting discarded).";
@@ -2633,16 +2829,13 @@ void Application::OpenPrintDialog()
     m_printCopiesText      = std::to_string(std::max(1, m_printRequest.copies));
     m_printFromText        = std::to_string(std::max(1, m_printRequest.pageFrom));
     m_printToText          = std::to_string(std::max(1, m_printRequest.pageTo));
-    // In WYSIWYG mode, seed the print dialog's margins from the document's
-    // WYSIWYG margins so "Print" out of the box matches what's on screen.
+    // Seed the print dialog's margins from the document so "Print" out of
+    // the box matches what's on screen.
     PrintMargins defaultMargins = m_printRequest.margins;
-    if (m_wysiwygEnabled)
-    {
-        defaultMargins.topIn    = m_margins.topIn;
-        defaultMargins.bottomIn = m_margins.bottomIn;
-        defaultMargins.leftIn   = m_margins.leftIn;
-        defaultMargins.rightIn  = m_margins.rightIn;
-    }
+    defaultMargins.topIn    = m_margins.topIn;
+    defaultMargins.bottomIn = m_margins.bottomIn;
+    defaultMargins.leftIn   = m_margins.leftIn;
+    defaultMargins.rightIn  = m_margins.rightIn;
     m_printMarginText[0]   = FormatMarginText(defaultMargins.topIn);
     m_printMarginText[1]   = FormatMarginText(defaultMargins.bottomIn);
     m_printMarginText[2]   = FormatMarginText(defaultMargins.leftIn);
@@ -2678,30 +2871,18 @@ void Application::ClosePrintDialog(bool commit)
     m_printRequest.printerName  = m_printerList[m_printPrinterIdx];
     m_printRequest.documentName = m_document->DisplayName();
 
-    // WYSIWYG: print uses the editor's current font/size so the output
-    // matches what's on screen. Bundled TTFs are registered privately by
-    // PrintDocument via AddFontResourceEx so users don't need the font
-    // installed system-wide.
-    if (m_wysiwygEnabled)
-    {
-        m_printRequest.useDocumentFont = true;
-        m_printRequest.fontFamily      = FontFaceFamily(m_fontSettings.face);
-        m_printRequest.fontFile        = ResolveAssetPath(FontFaceFile(m_fontSettings.face));
-        m_printRequest.pointSize       = FontSizePoints(m_fontSettings.size);
-        m_printRequest.bold            = FontFaceIsBold(m_fontSettings.face);
-        // The formatted print path uses pixel-based wrap with per-char
-        // advance — exactly mirrors the screen renderer — so the
-        // chars-per-line override is no longer needed when formats are
-        // passed.
-        m_printRequest.overrideCharsPerLine = 0;
-        m_printRequest.formats              = &m_document->Buffer().Formats();
-    }
-    else
-    {
-        m_printRequest.useDocumentFont      = false;
-        m_printRequest.overrideCharsPerLine = 0;
-        m_printRequest.formats              = nullptr;
-    }
+    // Print uses the editor's current font/size so the output matches what
+    // is on screen. Bundled TTFs are registered privately by PrintDocument
+    // via AddFontResourceEx so users don't need the font installed
+    // system-wide. The formatted print path uses pixel-based wrap with
+    // per-char advance — exactly mirrors the screen renderer.
+    m_printRequest.useDocumentFont = true;
+    m_printRequest.fontFamily      = FontFaceFamily(m_fontSettings.face);
+    m_printRequest.fontFile        = ResolveAssetPath(FontFaceFile(m_fontSettings.face));
+    m_printRequest.pointSize       = FontSizePoints(m_fontSettings.size);
+    m_printRequest.bold            = FontFaceIsBold(m_fontSettings.face);
+    m_printRequest.formats         = &m_document->Buffer().Formats();
+    m_printRequest.pageBreakBefore = &m_document->Buffer().PageBreaks();
 
     m_promptMode    = PromptMode::None;
     m_statusMessage = "Printing...";
@@ -2835,17 +3016,8 @@ void Application::ToggleUnderline()     { ApplyStyleAction(CharStyle::Underline)
 void Application::ToggleStrikethrough() { ApplyStyleAction(CharStyle::Strikethrough); }
 
 // ---------------------------------------------------------------------------
-// WYSIWYG mode + Margins dialog
+// Margins dialog
 // ---------------------------------------------------------------------------
-
-void Application::ToggleWysiwyg()
-{
-    m_wysiwygEnabled = !m_wysiwygEnabled;
-    if (m_wysiwygEnabled)
-        m_wysiwygScrollPx = 0;
-    m_statusMessage = m_wysiwygEnabled ? "WYSIWYG on" : "WYSIWYG off";
-    WriteSidecarForCurrentDocument();
-}
 
 void Application::OpenMarginsDialog()
 {
@@ -2938,7 +3110,6 @@ void Application::CaptureFileSettings(FileSettings& s) const
 {
     s.SetBool("word_wrap",       m_wordWrap);
     s.SetBool("show_word_count", m_showWordCount);
-    s.SetBool  ("wysiwyg",       m_wysiwygEnabled);
     s.SetString("margin_top",    std::to_string(m_margins.topIn));
     s.SetString("margin_bottom", std::to_string(m_margins.bottomIn));
     s.SetString("margin_left",   std::to_string(m_margins.leftIn));
@@ -2951,8 +3122,8 @@ void Application::ApplyFileSettings(const FileSettings& s)
         SetWordWrap(s.GetBool("word_wrap"));
     if (s.Has("show_word_count"))
         m_showWordCount = s.GetBool("show_word_count");
-    if (s.Has("wysiwyg"))
-        m_wysiwygEnabled = s.GetBool("wysiwyg");
+    // Legacy `wysiwyg` sidecar key from before the product split is silently
+    // ignored on read; RetroDocWriter is always WYSIWYG now.
     auto readDouble = [&](const char* key, double& out) {
         if (!s.Has(key)) return;
         try { out = std::stod(s.GetString(key)); } catch (...) {}
@@ -3009,7 +3180,17 @@ void Application::HandleWindowResized(int newW, int newH)
 void Application::ApplyFontSettings(const FontSettings& settings)
 {
     m_fontSettings = settings;
-    m_renderer->SetFontSettings(settings);
+    // The cell-grid chrome (menus, status bar, dialogs) renders into
+    // ScreenBuffer cells of fixed width, so it must use a monospace face.
+    // The document itself can be a proportional face — WysiwygRenderer
+    // handles that with per-glyph advance — but RetroRenderer cannot.
+    // When the document's default face is proportional, fall the chrome
+    // back to the canonical monospace face at the same size so menus and
+    // dialogs still render cleanly.
+    FontSettings chromeSettings = settings;
+    if (!FontFaceIsMonospace(chromeSettings.face))
+        chromeSettings.face = FontFace::CascadiaMono;
+    m_renderer->SetFontSettings(chromeSettings);
     // WysiwygRenderer rebuilds its glyph cache lazily inside Draw() when the
     // (face, point size, dpi) tuple changes — no explicit notification needed.
 
@@ -3179,10 +3360,15 @@ void Application::Render()
     uiState.themeDialogFocusIdx  = m_themeDialogFocusIdx;
     uiState.themeDialogActiveIdx = static_cast<int>(m_themeName);
 
-    uiState.colorDialogActive    = (m_promptMode == PromptMode::ColorDialog);
-    uiState.colorDialogFocusIdx  = m_colorDialogFocusIdx;
-    uiState.colorDialogCurrent   = (m_currentColor == CharFormat::Inherit)
-                                   ? -1 : static_cast<int>(m_currentColor);
+    {
+        bool isHl = (m_promptMode == PromptMode::HighlightDialog);
+        uiState.colorDialogActive      = (m_promptMode == PromptMode::ColorDialog || isHl);
+        uiState.colorDialogIsHighlight = isHl;
+        uiState.colorDialogFocusIdx    = m_colorDialogFocusIdx;
+        uint8_t cur = isHl ? m_currentHighlight : m_currentColor;
+        uiState.colorDialogCurrent     = (cur == CharFormat::Inherit)
+                                         ? -1 : static_cast<int>(cur);
+    }
 
     // Editor options
     uiState.wordWrap = m_wordWrap;
@@ -3215,8 +3401,7 @@ void Application::Render()
     uiState.printOrientation    = (m_printRequest.orientation == PrintOrientation::Landscape) ? 1 : 0;
     uiState.printFocusField     = static_cast<int>(m_printFocus);
 
-    // WYSIWYG mode + Margins dialog snapshot
-    uiState.wysiwygEnabled      = m_wysiwygEnabled;
+    // Margins dialog snapshot
     uiState.marginsDialogActive = (m_promptMode == PromptMode::MarginsDialog);
     for (int i = 0; i < 4; ++i) uiState.marginEditText[i] = m_marginEditText[i];
     uiState.marginFocusIdx      = m_marginFocusIdx;
@@ -3261,71 +3446,10 @@ void Application::Render()
 
     m_ui->Draw(*m_screenBuffer, m_cursor, uiState);
 
-    // Cell-grid block cursor (hidden in WYSIWYG mode — WysiwygRenderer draws
-    // its own proportional cursor instead).
-    if (m_cursor.visible && m_promptMode == PromptMode::None && !m_wysiwygEnabled)
-    {
-        int screenRow;
-        int screenCol;
-        if (m_wordWrap)
-        {
-            int displayRow = 0;
-            for (int r = m_viewportTop; r < m_cursor.row; ++r)
-                displayRow += DisplayRowsForLine(r);
-            auto starts = ComputeWrapStarts(
-                m_document->Buffer().Line(m_cursor.row), m_screenColumns);
-            int segIdx = WrapSegmentForColumn(starts, m_cursor.column);
-            displayRow += segIdx;
-            screenRow = m_layout.ROW_EDITOR_FIRST + displayRow;
-            screenCol = m_cursor.column - starts[segIdx];
-        }
-        else
-        {
-            screenRow = m_cursor.row    - m_viewportTop  + m_layout.ROW_EDITOR_FIRST;
-            screenCol = m_cursor.column - m_viewportLeft;
-        }
-
-        if (screenRow >= m_layout.ROW_EDITOR_FIRST && screenRow <= m_layout.ROW_EDITOR_LAST
-            && screenCol >= 0 && screenCol < m_screenColumns)
-        {
-            m_screenBuffer->At(screenCol, screenRow).reverseVideo = true;
-        }
-    }
-
-    if (m_wysiwygEnabled && m_promptMode == PromptMode::None)
+    if (m_promptMode == PromptMode::None)
     {
         m_renderer->PaintBuffer(*m_screenBuffer);
-
-        int cw = m_renderer->CellWidth();
-        int ch = m_renderer->CellHeight();
-        // The cell-mode editor opens TTF fonts treating "point size" as
-        // pixel height, which is equivalent to assuming 72 DPI. Using the
-        // same effective DPI for the WYSIWYG preview keeps the font the
-        // same visual size as the editor — only the page rectangle and
-        // margins appear (at the matching scale). The wrap math itself
-        // uses ComputeCharsPerLine which is DPI-independent, so the wrap
-        // still matches what the printer produces at the printer's true
-        // DPI.
-        const int dpi = 72;
-
-        WysiwygRenderer::DrawContext ctx{};
-        ctx.buffer         = &m_document->Buffer().Text();
-        ctx.formatted      = &m_document->Buffer();
-        ctx.cursorRow      = m_cursor.row;
-        ctx.cursorCol      = m_cursor.column;
-        ctx.cursorVisible  = m_cursor.visible;
-        ctx.selActive      = m_selection.active;
-        ctx.selAnchorRow   = m_selection.anchorRow;
-        ctx.selAnchorCol   = m_selection.anchorCol;
-        ctx.margins        = m_margins;
-        ctx.editorAreaPxX  = 0;
-        ctx.editorAreaPxY  = m_layout.ROW_EDITOR_FIRST * ch;
-        ctx.editorAreaPxW  = m_screenColumns * cw;
-        ctx.editorAreaPxH  = (m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1) * ch;
-        ctx.screenDpi      = dpi;
-        ctx.viewportTopPx  = m_wysiwygScrollPx;
-        ctx.face           = m_fontSettings.face;
-        ctx.pointSize      = FontSizePoints(m_fontSettings.size);
+        WysiwygRenderer::DrawContext ctx = BuildWysiwygDrawContext();
 
         // Auto-scroll the page so the cursor stays visible.
         m_wysiwygScrollPx  = m_wysiwyg->ClampScrollForCursor(ctx);
@@ -3338,6 +3462,56 @@ void Application::Render()
     {
         m_renderer->Render(*m_screenBuffer);
     }
+}
+
+WysiwygRenderer::DrawContext Application::BuildWysiwygDrawContext() const
+{
+    // RTF point sizes are absolute typographic units (1 pt = 1/72 in).
+    // Render the WYSIWYG view at Windows' default 96 DPI so a "16 pt"
+    // glyph is ~21 px tall on screen — matching LibreOffice / Word and
+    // the printed page. Earlier phases rendered at 72 DPI to keep the
+    // proportional view at the same pixel scale as the cell-grid
+    // editor, but RetroDocWriter is no longer paired with cell-mode
+    // rendering of the document and the 72 DPI shortcut made body
+    // text noticeably smaller than every other word processor.
+    const int dpi = 96;
+    const int cw  = m_renderer ? m_renderer->CellWidth()  : 1;
+    const int ch  = m_renderer ? m_renderer->CellHeight() : 1;
+
+    WysiwygRenderer::DrawContext ctx{};
+    ctx.buffer         = m_document ? &m_document->Buffer().Text() : nullptr;
+    ctx.formatted      = m_document ? &m_document->Buffer() : nullptr;
+    ctx.cursorRow      = m_cursor.row;
+    ctx.cursorCol      = m_cursor.column;
+    ctx.cursorVisible  = m_cursor.visible;
+    ctx.selActive      = m_selection.active;
+    ctx.selAnchorRow   = m_selection.anchorRow;
+    ctx.selAnchorCol   = m_selection.anchorCol;
+    ctx.margins        = m_margins;
+    ctx.editorAreaPxX  = 0;
+    ctx.editorAreaPxY  = m_layout.ROW_EDITOR_FIRST * ch;
+    ctx.editorAreaPxW  = m_screenColumns * cw;
+    ctx.editorAreaPxH  = (m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1) * ch;
+    ctx.screenDpi      = dpi;
+    ctx.viewportTopPx  = m_wysiwygScrollPx;
+    ctx.face           = m_fontSettings.face;
+    ctx.pointSize      = FontSizePoints(m_fontSettings.size);
+    return ctx;
+}
+
+RtfWriter::Page Application::CurrentRtfPage() const
+{
+    // US Letter is currently the only supported paper size — matches the
+    // hardcoded kPaperWidthIn / kPaperHeightIn in WysiwygRenderer.cpp.
+    // The margins come from the per-document m_margins (Page > Margins...).
+    RtfWriter::Page p;
+    p.widthIn        = 8.5;
+    p.heightIn       = 11.0;
+    p.marginLeftIn   = m_margins.leftIn;
+    p.marginRightIn  = m_margins.rightIn;
+    p.marginTopIn    = m_margins.topIn;
+    p.marginBottomIn = m_margins.bottomIn;
+    return p;
 }
 
 void Application::UpdateCursorBlink()

@@ -7,6 +7,19 @@ FormattedTextBuffer::FormattedTextBuffer()
     // empty format row so the invariant (lineCount matches across both
     // layers) holds from the start.
     m_formats.emplace_back();
+    m_pageBreakBefore.emplace_back(false);
+}
+
+bool FormattedTextBuffer::PageBreakBefore(int row) const
+{
+    if (row < 0 || row >= static_cast<int>(m_pageBreakBefore.size())) return false;
+    return m_pageBreakBefore[row];
+}
+
+void FormattedTextBuffer::SetPageBreakBefore(int row, bool on)
+{
+    if (row < 0 || row >= static_cast<int>(m_pageBreakBefore.size())) return;
+    m_pageBreakBefore[row] = on;
 }
 
 CharFormat FormattedTextBuffer::FormatAt(int row, int col) const
@@ -22,25 +35,37 @@ bool FormattedTextBuffer::HasAnyFormatting() const
     for (const auto& row : m_formats)
         for (const auto& f : row)
             if (!f.IsPlain()) return true;
+    for (bool b : m_pageBreakBefore)
+        if (b) return true;
     return false;
 }
 
 void FormattedTextBuffer::SetLines(std::vector<std::string> lines,
                                    std::vector<std::vector<CharFormat>> formats)
 {
+    SetLines(std::move(lines), std::move(formats), {});
+}
+
+void FormattedTextBuffer::SetLines(std::vector<std::string> lines,
+                                   std::vector<std::vector<CharFormat>> formats,
+                                   std::vector<bool> pageBreakBefore)
+{
     if (lines.empty())
         lines.emplace_back();
-    // Pad formats to match lines exactly. Any size mismatch (e.g. truncated
-    // sidecar / RTF parser bug) results in missing entries treated as
-    // default CharFormat (no overrides).
+    // Pad formats and pageBreakBefore to match lines exactly. Size
+    // mismatches (truncated sidecar / RTF parser bug) become default
+    // CharFormat / page-break-false entries.
     while (formats.size() < lines.size())
         formats.emplace_back();
     formats.resize(lines.size());
     for (size_t i = 0; i < lines.size(); ++i)
         formats[i].resize(lines[i].size(), CharFormat{});
 
+    pageBreakBefore.resize(lines.size(), false);
+
     m_text.SetLines(std::move(lines));
     m_formats = std::move(formats);
+    m_pageBreakBefore = std::move(pageBreakBefore);
 }
 
 void FormattedTextBuffer::SetLinesPlain(std::vector<std::string> lines)
@@ -51,6 +76,7 @@ void FormattedTextBuffer::SetLinesPlain(std::vector<std::string> lines)
     m_formats.resize(lines.size());
     for (size_t i = 0; i < lines.size(); ++i)
         m_formats[i].assign(lines[i].size(), CharFormat{});
+    m_pageBreakBefore.assign(lines.size(), false);
     m_text.SetLines(std::move(lines));
 }
 
@@ -91,9 +117,13 @@ void FormattedTextBuffer::Backspace(int col, int row)
     {
         m_text.Backspace(col, row);
         // Lines merged: append row's formats onto row-1, then erase row.
+        // The disappearing row's page-break-before is dropped on the floor
+        // (the surviving row-1 keeps its own flag).
         auto tail = std::move(m_formats[row]);
         m_formats[row - 1].insert(m_formats[row - 1].end(), tail.begin(), tail.end());
         m_formats.erase(m_formats.begin() + row);
+        if (row < static_cast<int>(m_pageBreakBefore.size()))
+            m_pageBreakBefore.erase(m_pageBreakBefore.begin() + row);
     }
 }
 
@@ -114,6 +144,8 @@ void FormattedTextBuffer::DeleteForward(int col, int row)
         auto tail = std::move(m_formats[row + 1]);
         m_formats[row].insert(m_formats[row].end(), tail.begin(), tail.end());
         m_formats.erase(m_formats.begin() + row + 1);
+        if (row + 1 < static_cast<int>(m_pageBreakBefore.size()))
+            m_pageBreakBefore.erase(m_pageBreakBefore.begin() + row + 1);
     }
 }
 
@@ -129,6 +161,12 @@ void FormattedTextBuffer::InsertNewline(int col, int row)
     std::vector<CharFormat> tail(m_formats[row].begin() + col, m_formats[row].end());
     m_formats[row].resize(col);
     m_formats.insert(m_formats.begin() + row + 1, std::move(tail));
+    // New row inserted at row+1; its page-break-before defaults to false
+    // (caller can explicitly set it via SetPageBreakBefore for Ctrl+Enter).
+    if (static_cast<int>(m_pageBreakBefore.size()) >= row + 1)
+        m_pageBreakBefore.insert(m_pageBreakBefore.begin() + row + 1, false);
+    else
+        m_pageBreakBefore.push_back(false);
 }
 
 void FormattedTextBuffer::InsertText(int col, int row, const std::string& text,
@@ -185,6 +223,11 @@ void FormattedTextBuffer::InsertText(int col, int row, const std::string& text,
                        origRowFormats.begin() + headLen,
                        origRowFormats.end());
     m_formats.insert(m_formats.begin() + insertAt, std::move(lastRow));
+
+    // Resize page-break vector for the new rows; new rows default false.
+    int newRows = static_cast<int>(parts.size()) - 1;
+    for (int i = 0; i < newRows; ++i)
+        m_pageBreakBefore.insert(m_pageBreakBefore.begin() + row + 1, false);
 }
 
 void FormattedTextBuffer::DeleteRange(int startRow, int startCol,
@@ -216,6 +259,14 @@ void FormattedTextBuffer::DeleteRange(int startRow, int startCol,
                     m_formats.begin() + endRow + 1);
     head.insert(head.end(), tail.begin(), tail.end());
     m_formats[startRow] = std::move(head);
+    // Page-break flags on rows startRow+1 .. endRow disappear with their
+    // rows; startRow's own flag survives.
+    int eraseHi = std::min<int>(endRow + 1,
+                                static_cast<int>(m_pageBreakBefore.size()));
+    int eraseLo = std::min<int>(startRow + 1, eraseHi);
+    if (eraseLo < eraseHi)
+        m_pageBreakBefore.erase(m_pageBreakBefore.begin() + eraseLo,
+                                m_pageBreakBefore.begin() + eraseHi);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +354,14 @@ void FormattedTextBuffer::SetColorInRange(int startRow, int startCol,
 {
     ApplyAcrossRange(m_formats, m_text, startRow, startCol, endRow, endCol,
                      [colorIdx](CharFormat& f) { f.color = colorIdx; });
+}
+
+void FormattedTextBuffer::SetHighlightInRange(int startRow, int startCol,
+                                              int endRow,   int endCol,
+                                              uint8_t highlightIdx)
+{
+    ApplyAcrossRange(m_formats, m_text, startRow, startCol, endRow, endCol,
+                     [highlightIdx](CharFormat& f) { f.highlight = highlightIdx; });
 }
 
 void FormattedTextBuffer::FlattenAllStyles()
