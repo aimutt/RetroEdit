@@ -5,6 +5,7 @@
 #include "editor/Palette.h"
 #include "editor/TextBuffer.h"
 #include "editor/FormattedTextBuffer.h"
+#include "editor/Utf8.h"
 #include "platform/AssetPath.h"
 
 #include <SDL3_ttf/SDL_ttf.h>
@@ -94,6 +95,7 @@ namespace
     struct CharRender
     {
         char        ch;
+        char32_t    cp;            // decoded codepoint at the lead byte; U' ' on continuation bytes
         int         advance;       // integer pixel advance used for drawing
         // Sub-pixel-precision advance, used ONLY for wrap-budget math so
         // the on-screen wrap column matches LibreOffice / print (which
@@ -323,15 +325,31 @@ static void BuildLayoutPass(LayoutPass& out,
             FontFace face = ResolveFace(f, defaultFace);
             int     ptSz = ResolveSize(f, defaultPointSize);
             GlyphCache* cache = cacheFor(face, ptSz);
-            char32_t cp = static_cast<char32_t>(static_cast<unsigned char>(line[c]));
             CharRender cr;
             cr.ch          = line[c];
             cr.style       = f.style;
             cr.cache       = cache;
-            cr.advance     = cache ? cache->GlyphAdvance(cp, f.style) : ptSz / 2;
-            cr.advanceSubpx = subpxFor ? subpxFor(face, ptSz, static_cast<unsigned int>(cp))
-                                       : static_cast<double>(cr.advance);
             cr.lineHeight  = cache ? cache->LineHeight() : ptSz;
+            // UTF-8 walk: lead byte holds the full codepoint + full advance.
+            // Continuation bytes get zero advance and U' ' so the glyph-draw
+            // path skips them (cr.cp == U' ' → cp > U' ' is false). Byte
+            // indices stay 1:1 with CharRender entries so cursor/selection
+            // logic elsewhere is unaffected.
+            if (Utf8IsContinuationByte(static_cast<unsigned char>(line[c])))
+            {
+                cr.cp           = U' ';
+                cr.advance      = 0;
+                cr.advanceSubpx = 0.0;
+            }
+            else
+            {
+                size_t next = c;
+                cr.cp = Utf8DecodeAt(line, c, next);
+                cr.advance     = cache ? cache->GlyphAdvance(cr.cp, f.style) : ptSz / 2;
+                cr.advanceSubpx = subpxFor
+                    ? subpxFor(face, ptSz, static_cast<unsigned int>(cr.cp))
+                    : static_cast<double>(cr.advance);
+            }
             cr.color       = ResolveColor(f, themeNormalText);
             // Misspell override — applied AFTER ResolveColor so explicit
             // per-char colors are kept on misspelled chars too (they just
@@ -798,7 +816,10 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
             for (int c = segLo; c < segHi; ++c)
             {
                 const CharRender& cr = chars[c];
-                char32_t cp = static_cast<char32_t>(static_cast<unsigned char>(cr.ch));
+                // cr.cp is the decoded codepoint on the lead byte and
+                // U' ' on continuation bytes — so the cp > U' ' check
+                // below naturally skips continuation bytes.
+                char32_t cp = cr.cp;
 
                 // Per-char foreground: from CharFormat.color (or theme
                 // default when Inherit). Selection's reverse-video wins.

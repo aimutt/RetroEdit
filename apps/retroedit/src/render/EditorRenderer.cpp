@@ -3,6 +3,7 @@
 #include "editor/TextBuffer.h"
 #include "editor/WordWrap.h"
 #include "editor/Selection.h"
+#include "editor/Utf8.h"
 #include "app/Cursor.h"
 #include <algorithm>
 
@@ -117,6 +118,11 @@ void EditorRenderer::Draw(const DrawContext& ctx)
     if (!ctx.wordWrap)
     {
         // One buffer row per visual row; viewportLeft slides the column window.
+        // Cells are emitted per CODEPOINT — a multi-byte UTF-8 sequence
+        // occupies exactly one cell, no trailing blanks. The buffer-byte
+        // cursor lands on lead bytes (after the UTF-8-aware cursor stepping
+        // in Application), so `byteStart == ctx.cursorCol` reliably picks
+        // the cursor's cell.
         for (int r = 0; r < visibleRows; ++r)
         {
             const int bufLine = ctx.viewportTop + r;
@@ -124,27 +130,43 @@ void EditorRenderer::Draw(const DrawContext& ctx)
             const std::string& lineStr = ctx.buffer->Line(bufLine);
             const int lineLen = static_cast<int>(lineStr.size());
 
+            int bufPos = ctx.viewportLeft;
+            // Clamp viewportLeft to a lead byte in case scroll math
+            // happened to land mid-sequence.
+            if (bufPos > 0 && bufPos < lineLen)
+                bufPos = static_cast<int>(
+                    Utf8LeadByteOffset(lineStr, static_cast<size_t>(bufPos)));
+
             for (int c = 0; c < editorCols; ++c)
             {
-                const int bufCol = c + ctx.viewportLeft;
-                char32_t ch32 = (bufCol >= 0 && bufCol < lineLen)
-                    ? static_cast<char32_t>(static_cast<unsigned char>(lineStr[bufCol]))
-                    : U' ';
-                bool selected = sel.ContainsCell(bufCol, bufLine,
+                char32_t ch32  = U' ';
+                int byteStart  = bufPos;
+                int byteEnd    = bufPos + 1;  // 1-byte step for past-EOL cells
+                if (bufPos >= 0 && bufPos < lineLen)
+                {
+                    size_t next = static_cast<size_t>(bufPos);
+                    ch32 = Utf8DecodeAt(lineStr,
+                                        static_cast<size_t>(bufPos), next);
+                    byteEnd = static_cast<int>(next);
+                }
+                bool selected = sel.ContainsCell(byteStart, bufLine,
                                                  ctx.cursorRow, ctx.cursorCol);
                 bool cursor = ctx.cursorVisible
                               && bufLine == ctx.cursorRow
-                              && bufCol  == ctx.cursorCol;
-                bool misspell = (bufCol >= 0 && bufCol < lineLen
-                                 && isMisspelled(bufLine, bufCol));
+                              && byteStart == ctx.cursorCol;
+                bool misspell = (byteStart >= 0 && byteStart < lineLen
+                                 && isMisspelled(bufLine, byteStart));
                 drawCell(ctx.editorPxX + c * cw, ctx.editorPxY + r * ch,
                          ch32, selected, cursor, misspell);
+                bufPos = byteEnd;
             }
         }
     }
     else
     {
         // Word-wrap mode: each buffer row may span multiple visual rows.
+        // Same per-codepoint cell stepping as above; segment boundaries
+        // come from ComputeWrapStarts (byte indices).
         int visualRow = 0;
         int bufLine   = ctx.viewportTop;
         while (visualRow < visibleRows && bufLine < ctx.buffer->LineCount())
@@ -161,24 +183,32 @@ void EditorRenderer::Draw(const DrawContext& ctx)
                 int segEnd   = (seg + 1 < static_cast<int>(starts.size()))
                                  ? starts[seg + 1]
                                  : lineLen;
+                int bufPos = segStart;
                 for (int c = 0; c < editorCols; ++c)
                 {
-                    const int bufCol = segStart + c;
-                    bool inSegment   = (bufCol < segEnd);
-                    char32_t ch32 = inSegment
-                        ? static_cast<char32_t>(static_cast<unsigned char>(lineStr[bufCol]))
-                        : U' ';
+                    char32_t ch32 = U' ';
+                    int byteStart = bufPos;
+                    int byteEnd   = bufPos + 1;
+                    bool inSegment = (bufPos < segEnd);
+                    if (inSegment)
+                    {
+                        size_t next = static_cast<size_t>(bufPos);
+                        ch32 = Utf8DecodeAt(lineStr,
+                                            static_cast<size_t>(bufPos), next);
+                        byteEnd = static_cast<int>(next);
+                    }
                     bool selected = inSegment
-                                    && sel.ContainsCell(bufCol, bufLine,
+                                    && sel.ContainsCell(byteStart, bufLine,
                                                         ctx.cursorRow, ctx.cursorCol);
                     bool cursor = ctx.cursorVisible
                                   && bufLine == ctx.cursorRow
-                                  && bufCol  == ctx.cursorCol
+                                  && byteStart == ctx.cursorCol
                                   && inSegment;
-                    bool misspell = inSegment && isMisspelled(bufLine, bufCol);
+                    bool misspell = inSegment && isMisspelled(bufLine, byteStart);
                     drawCell(ctx.editorPxX + c * cw,
                              ctx.editorPxY + visualRow * ch,
                              ch32, selected, cursor, misspell);
+                    bufPos = byteEnd;
                 }
             }
             ++bufLine;
