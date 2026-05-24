@@ -31,12 +31,12 @@ inline const char* FontSizeName(FontSize size)
 {
     switch (size)
     {
-        case FontSize::Small:      return "Small";
-        case FontSize::Medium:     return "Medium";
-        case FontSize::Large:      return "Large";
-        case FontSize::ExtraLarge: return "Extra Large";
+        case FontSize::Small:      return "12 pt";
+        case FontSize::Medium:     return "16 pt";
+        case FontSize::Large:      return "20 pt";
+        case FontSize::ExtraLarge: return "24 pt";
     }
-    return "Medium";
+    return "16 pt";
 }
 
 inline int FontSizeCount() { return 4; }

@@ -84,6 +84,7 @@ private:
     void HandleMenuKeyDown(const SDL_KeyboardEvent& key);
     void HandleTextInput(const char* text);
     void HandleMouseDown(int cellCol, int cellRow, Uint8 button);
+    void HandleMouseUp  (int cellCol, int cellRow, Uint8 button);
     void HandleMouseMotion(int cellCol, int cellRow);
     // Returns true if the click was consumed by an active dialog.
     bool HandleDialogMouseDown(int cellCol, int cellRow);
@@ -263,14 +264,29 @@ private:
     int        m_activeMenu          = -1;
     int        m_activeItem          = -1;
 
-    // Font picker
+    // Font picker. Flat preset list — see EditorUiState comment in
+    // RetroUi.h for the (face_idx * FontSizeCount() + size_idx) encoding.
     FontSettings m_fontSettings;
-    int          m_fontDialogFaceIdx     = 0;
-    int          m_fontDialogSizeIdx     = 0;
-    int          m_fontDialogFocusColumn = 0;   // 0 = face, 1 = size
+    int          m_fontDialogPresetIdx = 0;  // focused row
+    int          m_fontDialogScrollTop = 0;  // first visible row
 
     // Theme picker (Options > Theme...)
     int          m_themeDialogFocusIdx   = 0;
+
+    // Scrollbar thumb drag. Reusable across dialogs — only one scrollbar is
+    // ever active at once, so the state is flat and tagged by the prompt mode
+    // that owns it. A future dialog adopting drag just (a) calls
+    // RetroUi::HitTestScrollbar, (b) populates these fields on mousedown with
+    // its own geometry, (c) adds its PromptMode to the switch in
+    // HandleMouseMotion that writes the new scrollTop back.
+    bool       m_scrollbarDragActive       = false;
+    PromptMode m_scrollbarDragOwner        = PromptMode::None;
+    int        m_scrollbarDragX            = 0;
+    int        m_scrollbarDragY            = 0;
+    int        m_scrollbarDragHeight       = 0;
+    int        m_scrollbarDragTotalItems   = 0;
+    int        m_scrollbarDragVisibleItems = 0;
+    int        m_scrollbarDragGrabOffset   = 0;
 
     // Per-character text color (Format > Text Color...). m_currentColor
     // applies to next-typed input when no selection is active.

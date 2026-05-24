@@ -326,6 +326,133 @@ void RetroUi::DrawBox(ScreenBuffer& buffer, int x, int y, int w, int h,
 }
 
 // ---------------------------------------------------------------------------
+// Reusable vertical scrollbar
+// ---------------------------------------------------------------------------
+//
+// Layout when height >= 3:
+//     row 0          : U'▲' up-arrow button
+//     rows 1..h-2    : track (U'░') and thumb (U'█')
+//     row h-1        : U'▼' down-arrow button
+// When height < 3 the arrows are dropped and the full column is track + thumb.
+//
+// Thumb extents (size + top, measured in cell rows *relative to scrollbarY*)
+// are computed in one place so DrawScrollbar, HitTestScrollbar, and
+// ComputeScrollTopFromThumbDrag all stay in sync.
+
+namespace
+{
+    struct ThumbExtents { int top; int size; };
+
+    ThumbExtents ComputeThumbExtents(int height, int totalItems,
+                                     int visibleItems, int scrollTop)
+    {
+        ThumbExtents e{ 0, 0 };
+        if (height <= 0 || totalItems <= visibleItems) return e;
+
+        const bool hasArrows = (height >= 3);
+        const int  trackY    = hasArrows ? 1 : 0;
+        const int  trackH    = hasArrows ? height - 2 : height;
+
+        e.size = std::max(1, (trackH * visibleItems) / totalItems);
+        int maxScroll = std::max(1, totalItems - visibleItems);
+        int rel = std::clamp(
+            ((trackH - e.size) * scrollTop) / maxScroll,
+            0, trackH - e.size);
+        e.top = trackY + rel;
+        return e;
+    }
+}
+
+void RetroUi::DrawScrollbar(ScreenBuffer& buffer, int x, int y, int height,
+                            int totalItems, int visibleItems, int scrollTop)
+{
+    if (height <= 0) return;
+
+    Color track = m_theme.dimText;
+    Color thumb = m_theme.brightText;
+    Color bg    = m_theme.background;
+
+    const bool hasArrows = (height >= 3);
+    const int  trackY0   = hasArrows ? 1 : 0;
+    const int  trackY1   = hasArrows ? height - 2 : height - 1;
+
+    for (int r = trackY0; r <= trackY1; ++r)
+        buffer.PutChar(x, y + r, U'░', track, bg);
+
+    if (hasArrows)
+    {
+        buffer.PutChar(x, y,              U'▲', track, bg);
+        buffer.PutChar(x, y + height - 1, U'▼', track, bg);
+    }
+
+    if (totalItems <= visibleItems) return;
+
+    ThumbExtents t = ComputeThumbExtents(height, totalItems, visibleItems, scrollTop);
+    for (int r = 0; r < t.size; ++r)
+        buffer.PutChar(x, y + t.top + r, U'█', thumb, bg);
+}
+
+RetroUi::ScrollbarHit RetroUi::HitTestScrollbar(int cellCol, int cellRow,
+                                                 int scrollbarX, int scrollbarY, int height,
+                                                 int totalItems, int visibleItems,
+                                                 int scrollTop) const
+{
+    ScrollbarHit out;
+    if (cellCol != scrollbarX || height <= 0) return out;
+    int k = cellRow - scrollbarY;
+    if (k < 0 || k >= height) return out;
+
+    const bool hasArrows = (height >= 3);
+    if (hasArrows && k == 0)
+    {
+        out.region = ScrollbarHit::Region::UpButton;
+        return out;
+    }
+    if (hasArrows && k == height - 1)
+    {
+        out.region = ScrollbarHit::Region::DownButton;
+        return out;
+    }
+
+    if (totalItems <= visibleItems)
+        return out;
+
+    ThumbExtents t = ComputeThumbExtents(height, totalItems, visibleItems, scrollTop);
+    if (k >= t.top && k < t.top + t.size)
+    {
+        out.region            = ScrollbarHit::Region::Thumb;
+        out.grabOffsetInThumb = k - t.top;
+        return out;
+    }
+    out.region = (k < t.top) ? ScrollbarHit::Region::TrackAbove
+                             : ScrollbarHit::Region::TrackBelow;
+    return out;
+}
+
+int RetroUi::ComputeScrollTopFromThumbDrag(int cellRow,
+                                            int scrollbarY, int height,
+                                            int totalItems, int visibleItems,
+                                            int grabOffsetInThumb) const
+{
+    if (height <= 0 || totalItems <= visibleItems) return 0;
+
+    const bool hasArrows = (height >= 3);
+    const int  trackY    = hasArrows ? 1 : 0;
+    const int  trackH    = hasArrows ? height - 2 : height;
+
+    int thumbSize = std::max(1, (trackH * visibleItems) / totalItems);
+    int travel    = trackH - thumbSize;
+    if (travel <= 0) return 0;
+
+    int desiredThumbTop = (cellRow - scrollbarY) - trackY - grabOffsetInThumb;
+    desiredThumbTop = std::clamp(desiredThumbTop, 0, travel);
+
+    int maxScroll = std::max(1, totalItems - visibleItems);
+    return std::clamp((desiredThumbTop * maxScroll + travel / 2) / travel,
+                      0, maxScroll);
+}
+
+// ---------------------------------------------------------------------------
 // Dropdown menu
 // ---------------------------------------------------------------------------
 
@@ -596,10 +723,21 @@ RetroUi::Rect RetroUi::ConfirmDialogRect(int screenColumns) const
     return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, 56, 7);
 }
 
-RetroUi::Rect RetroUi::FontDialogRect(int screenColumns, int faceCount, int sizeCount) const
+// Visible rows in the flat-list Font dialog. Picked to fit both small
+// (RetroEdit's 28 monospace presets) and large (RetroDocWriter's 60
+// proportional+monospace presets) catalogs without scrolling on a
+// reasonable terminal height, while keeping the dialog compact.
+constexpr int kFontDialogVisibleRows = 12;
+
+RetroUi::Rect RetroUi::FontDialogRect(int screenColumns) const
 {
-    int listRows = std::max(faceCount, sizeCount);
-    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS, 60, listRows + 5);
+    // Outer width 48 fits the bottom hint string
+    // "[Up/Down] Move  [Enter] Apply  [Esc] Cancel" (43 chars) plus the
+    // 2-char left padding and the right border. The longest preset
+    // label ("Source Serif Bold 24 pt *", 25 chars) fits comfortably.
+    // Outer height = title + visibleRows + blank + hint + bottom border.
+    return CenteredRect(screenColumns, m_layout.SCREEN_ROWS,
+                        48, kFontDialogVisibleRows + 4);
 }
 
 RetroUi::Rect RetroUi::ThemeDialogRect(int screenColumns, int themeCount) const
@@ -703,45 +841,60 @@ RetroUi::WordCountHit RetroUi::HitTestWordCountDialog(int cellCol, int cellRow, 
 }
 
 RetroUi::FontDialogClick RetroUi::HitTestFontDialog(int cellCol, int cellRow, int screenColumns,
-                                                     int faceCount, int sizeCount) const
+                                                     int presetCount, int scrollTop) const
 {
     FontDialogClick out;
-    Rect r = FontDialogRect(screenColumns, faceCount, sizeCount);
+    Rect r = FontDialogRect(screenColumns);
     if (!r.Contains(cellCol, cellRow)) return out;
 
-    // Mirror DrawFontDialog geometry exactly.
-    constexpr int faceColW = 28;
-    const int     sizeColW = r.w - 5 - faceColW;
-    const int     faceXLo  = r.x + 2;
-    const int     faceXHi  = r.x + 2 + faceColW;          // exclusive
-    const int     sizeXLo  = r.x + 2 + faceColW + 1;
-    const int     sizeXHi  = sizeXLo + sizeColW;          // exclusive
+    const int visibleRows = std::min(kFontDialogVisibleRows, presetCount);
 
-    // Hint row first
+    // Hint row first.
     if (cellRow == r.y + r.h - 2)
     {
         std::string token = TokenAt(
-            "[Up/Down] Move  [Tab] Switch  [Enter] Apply  [Esc] Cancel",
+            "[Up/Down] Move  [Enter] Apply  [Esc] Cancel",
             r.x + 2, cellCol);
         if (token == "ENTER") { out.hit = FontHit::ApplyHint;  return out; }
         if (token == "ESC")   { out.hit = FontHit::CancelHint; return out; }
         return out;
     }
 
-    // Item rows: y + 2 .. y + 2 + listRows - 1 (per column).
-    int idx = cellRow - (r.y + 2);
-
-    if (cellCol >= faceXLo && cellCol < faceXHi && idx >= 0 && idx < faceCount)
+    // Scrollbar column — delegate to the generic helper, then map regions
+    // onto the dialog-specific FontHit values.
+    if (cellCol == r.x + r.w - 2)
     {
-        out.hit = FontHit::FaceRow;
-        out.index = idx;
+        ScrollbarHit sb = HitTestScrollbar(cellCol, cellRow,
+                                           r.x + r.w - 2, r.y + 1, visibleRows,
+                                           presetCount, visibleRows, scrollTop);
+        switch (sb.region)
+        {
+            case ScrollbarHit::Region::UpButton:    out.hit = FontHit::ScrollUp;        break;
+            case ScrollbarHit::Region::DownButton:  out.hit = FontHit::ScrollDown;      break;
+            case ScrollbarHit::Region::Thumb:
+                out.hit               = FontHit::ScrollThumb;
+                out.grabOffsetInThumb = sb.grabOffsetInThumb;
+                break;
+            case ScrollbarHit::Region::TrackAbove:  out.hit = FontHit::ScrollTrackAbove; break;
+            case ScrollbarHit::Region::TrackBelow:  out.hit = FontHit::ScrollTrackBelow; break;
+            case ScrollbarHit::Region::None:        break;
+        }
         return out;
     }
-    if (cellCol >= sizeXLo && cellCol < sizeXHi && idx >= 0 && idx < sizeCount)
+
+    // Preset rows: y + 1 .. y + visibleRows. The list column ends one cell
+    // before the right border to leave room for the scrollbar.
+    int k = cellRow - (r.y + 1);
+    if (k >= 0 && k < visibleRows)
     {
-        out.hit = FontHit::SizeRow;
-        out.index = idx;
-        return out;
+        int presetIdx = scrollTop + k;
+        if (presetIdx >= 0 && presetIdx < presetCount
+            && cellCol >= r.x + 1 && cellCol < r.x + r.w - 2)
+        {
+            out.hit   = FontHit::PresetRow;
+            out.index = presetIdx;
+            return out;
+        }
     }
     return out;
 }
@@ -1477,20 +1630,16 @@ void RetroUi::DrawWordCountDialog(ScreenBuffer& buffer, const EditorUiState& sta
 
 void RetroUi::DrawFontDialog(ScreenBuffer& buffer, const EditorUiState& state)
 {
-    const int faceCount  = FontFaceCount();
-    const int sizeCount  = FontSizeCount();
-    const int listRows   = std::max(faceCount, sizeCount);
-
-    // Sized so the bottom hint string fits inside the right border.
-    const int outerWidth = 60;
-    const int faceColW   = 28;
-    const int sizeColW   = outerWidth - 5 - faceColW; // borders(2) + padding(2) + divider(1)
-    const int outerHeight = listRows + 5; // top, header, items..., blank, hint, bottom
-
-    int x = (buffer.Columns() - outerWidth) / 2;
-    int y = (m_layout.SCREEN_ROWS - outerHeight) / 2;
-    x = std::max(0, x);
-    y = std::max(0, y);
+    // Flat list of all (face, size) preset combinations.
+    const int presetCount  = FontFaceCount() * FontSizeCount();
+    const int visibleRows  = std::min(kFontDialogVisibleRows, presetCount);
+    Rect r = FontDialogRect(buffer.Columns());
+    const int x = r.x;
+    const int y = r.y;
+    const int outerWidth  = r.w;
+    const int outerHeight = r.h;
+    // borders(2) + padding(2) + scrollbar column(1)
+    const int listColW    = outerWidth - 5;
 
     Color fg     = m_theme.normalText;
     Color bg     = m_theme.background;
@@ -1504,71 +1653,50 @@ void RetroUi::DrawFontDialog(ScreenBuffer& buffer, const EditorUiState& state)
     int titleX = x + (outerWidth - static_cast<int>(std::strlen(title))) / 2;
     buffer.WriteText(titleX, y, title, bright, bg);
 
-    // Column headers on the first content row
-    int headerY = y + 1;
-    buffer.WriteText(x + 2,                    headerY, "Face", dim, bg);
-    buffer.WriteText(x + 2 + faceColW + 1,     headerY, "Size", dim, bg);
+    // Clamp scroll so the focused row stays visible — the Application
+    // adjusts m_fontDialogScrollTop on Up/Down navigation, but this
+    // belt-and-braces ensures any stale value still renders sanely.
+    int scrollTop = std::clamp(state.fontDialogScrollTop, 0,
+                               std::max(0, presetCount - visibleRows));
 
-    // Vertical divider between the two columns runs through the list rows
-    int dividerX = x + 1 + faceColW + 1;
-    for (int r = 0; r < listRows + 1; ++r)
-        buffer.PutChar(dividerX, y + 1 + r, U'|', m_theme.border, bg);
-
-    const bool faceFocused = (state.fontDialogFocusColumn == 0);
-
-    // Face column
-    for (int i = 0; i < faceCount; ++i)
+    for (int k = 0; k < visibleRows; ++k)
     {
-        int rowY        = y + 2 + i;
-        bool highlight  = (i == state.fontDialogFaceIdx);
-        bool isFocusHi  = highlight && faceFocused;
+        int presetIdx = scrollTop + k;
+        if (presetIdx >= presetCount) break;
 
-        Color rowFg = isFocusHi ? m_theme.reverseForeground
-                                : (highlight ? bright : fg);
-        Color rowBg = isFocusHi ? m_theme.reverseBackground : bg;
+        int rowY        = y + 1 + k;
+        bool focused    = (presetIdx == state.fontDialogPresetIdx);
+        bool active     = (presetIdx == state.fontDialogActivePreset);
 
-        for (int c = 0; c < faceColW; ++c)
+        Color rowFg = focused ? m_theme.reverseForeground
+                              : (active ? bright : fg);
+        Color rowBg = focused ? m_theme.reverseBackground : bg;
+
+        for (int c = 0; c < listColW; ++c)
             buffer.PutChar(x + 2 + c, rowY, U' ', rowFg, rowBg);
 
+        FontFace face = static_cast<FontFace>(presetIdx / FontSizeCount());
+        FontSize size = FontSizeAt(presetIdx % FontSizeCount());
         std::string label = " ";
-        label += FontFaceName(static_cast<FontFace>(i));
-        if (i == state.fontDialogActiveFace) label += " *";
-        if (static_cast<int>(label.size()) > faceColW) label.resize(faceColW);
+        label += FontFaceName(face);
+        label += " ";
+        label += std::to_string(FontSizePoints(size));
+        label += " pt";
+        if (active) label += " *";
+        if (static_cast<int>(label.size()) > listColW) label.resize(listColW);
         buffer.WriteText(x + 2, rowY, label, rowFg, rowBg);
     }
 
-    // Size column
-    for (int i = 0; i < sizeCount; ++i)
-    {
-        int rowY        = y + 2 + i;
-        bool highlight  = (i == state.fontDialogSizeIdx);
-        bool isFocusHi  = highlight && !faceFocused;
+    // Vertical scrollbar in the rightmost interior column. The track spans
+    // every list row and the thumb tracks position within the preset list.
+    DrawScrollbar(buffer, x + outerWidth - 2, y + 1, visibleRows,
+                  presetCount, visibleRows, scrollTop);
 
-        Color rowFg = isFocusHi ? m_theme.reverseForeground
-                                : (highlight ? bright : fg);
-        Color rowBg = isFocusHi ? m_theme.reverseBackground : bg;
-
-        for (int c = 0; c < sizeColW; ++c)
-            buffer.PutChar(x + 2 + faceColW + 1 + c, rowY, U' ', rowFg, rowBg);
-
-        std::string label = " ";
-        label += FontSizeName(FontSizeAt(i));
-        if (i == state.fontDialogActiveSize) label += " *";
-        if (static_cast<int>(label.size()) > sizeColW) label.resize(sizeColW);
-        buffer.WriteText(x + 2 + faceColW + 1, rowY, label, rowFg, rowBg);
-    }
-
-    // Hint at the bottom inner row
-    const char* hint = "[Up/Down] Move  [Tab] Switch  [Enter] Apply  [Esc] Cancel";
+    // Hint at the bottom inner row.
+    const char* hint = "[Up/Down] Move  [Enter] Apply  [Esc] Cancel";
     int hintX = x + 2;
     int hintY = y + outerHeight - 2;
     buffer.WriteText(hintX, hintY, hint, dim, bg);
-
-    // Footer note explaining the asterisk marker
-    if (outerHeight - 2 - 1 > 2 + listRows)
-    {
-        // there's a blank line between the lists and the hint
-    }
 }
 
 // ---------------------------------------------------------------------------
