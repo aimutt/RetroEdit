@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 class GlyphCache;
 class TextBuffer;
@@ -69,6 +70,25 @@ public:
     // of the editor area scrolls the page automatically.
     int ClampScrollForCursor(const DrawContext& ctx);
 
+    // One visual line of the laid-out document. Application uses these to
+    // navigate Up/Down arrows in mixed-size paragraphs — finding the
+    // closest source column whose pixel position matches the cursor's.
+    struct VisualLine
+    {
+        int bufferRow;            // source row in the TextBuffer
+        int startCol;             // source col (inclusive) where seg begins
+        int endCol;               // source col (exclusive) where seg ends
+        // Pixel x of each column relative to the segment's left edge.
+        // Size = (endCol - startCol + 1) — the trailing entry is the x
+        // just past the last glyph, so the cursor can sit at end-of-segment.
+        std::vector<int> charXs;
+    };
+
+    // Build the full visual layout for the given document context. Used by
+    // cursor-arrow navigation so Up/Down lands at the right visual column
+    // even when the previous/next visual row uses a different font size.
+    std::vector<VisualLine> ComputeVisualLayout(const DrawContext& ctx);
+
     // DPI-independent chars-per-line for a monospace font at `ptSize` with the
     // given page margins. Used by both the on-screen wrap and the print path
     // so the two layouts wrap at the same column count. Internally opens the
@@ -89,6 +109,22 @@ private:
         return (static_cast<uint32_t>(face) << 16)
              | static_cast<uint32_t>(pointSize & 0xFFFF);
     }
+
+    // For wrap math we need sub-pixel-precision per-char advance — the
+    // integer values that GlyphCache::GlyphAdvance returns are good for
+    // rendering but truncate at small ptSize, making the screen wrap
+    // disagree with LibreOffice/print which use higher precision. Open
+    // the font once per FontFace at a high reference size and read the
+    // integer advance there; the sub-pixel advance at any ptSize is
+    // hires_advance / kRefSize * ptSize.
+    struct HiResEntry { void* font = nullptr; };  // opaque TTF_Font*
+    std::unordered_map<int, HiResEntry> m_hiRes;
+
+    // Returns the sub-pixel advance (in screen pixels at dpi=72, since
+    // the editor uses an effective dpi of 72) for the given char at the
+    // given face/ptSize. Falls back to ptSize / 2.0 when the font can't
+    // be opened or the glyph has no metric.
+    double SubpxAdvance(FontFace face, int pointSize, unsigned int codepoint);
 
     SDL_Renderer* m_sdl    = nullptr;
     const Theme&  m_theme;

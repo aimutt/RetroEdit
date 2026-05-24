@@ -62,6 +62,7 @@ namespace
         int curFaceIdx = -1;            // -1 = Inherit
         int curHalfPt  = 0;             // 0  = Inherit
         int curColorIdx = -1;           // -1 = Inherit, else palette index
+        int curHighlightIdx = -1;       // -1 = Inherit, else palette index
 
         // Color table parsing — sibling of fonttbl with its own depth marker.
         // readerColorMap maps RTF \cfN index → palette index (or -1 for the
@@ -71,10 +72,19 @@ namespace
         bool colorEntryStarted = false;
         std::vector<int> readerColorMap;
 
+        // Page-break parsing. \page is a paragraph-level control that
+        // forces the *next* paragraph onto a new page. We can't always
+        // know "the next paragraph" at parse time — so we set a pending
+        // flag, and when the next newline opens a new line, we transfer
+        // the flag to that line's page-break-before slot.
+        bool pendingPageBreak = false;
+        std::vector<bool> pageBreakBefore;   // mirrors lines
+
         Parser(const std::string& s, FormattedTextBuffer& o) : src(s), out(o)
         {
             lines.emplace_back();
             formatRows.emplace_back();
+            pageBreakBefore.push_back(false);
         }
 
         bool skipping() const { return skipFromDepth > 0; }
@@ -115,6 +125,13 @@ namespace
             return static_cast<uint8_t>(curColorIdx);
         }
 
+        uint8_t ResolveHighlightForEmit() const
+        {
+            if (curHighlightIdx < 0) return CharFormat::Inherit;
+            if (curHighlightIdx >= Palette::kCount) return CharFormat::Inherit;
+            return static_cast<uint8_t>(curHighlightIdx);
+        }
+
         void emitByte(unsigned char b)
         {
             if (skipping()) return;
@@ -122,6 +139,8 @@ namespace
             {
                 lines.emplace_back();
                 formatRows.emplace_back();
+                pageBreakBefore.push_back(pendingPageBreak);
+                pendingPageBreak = false;
             }
             else if (b == '\r' || b == 0)
             {
@@ -135,6 +154,7 @@ namespace
                 f.face  = ResolveFaceForEmit();
                 f.size  = ResolveSizeForEmit();
                 f.color = ResolveColorForEmit();
+                f.highlight = ResolveHighlightForEmit();
                 formatRows.back().push_back(f);
             }
         }
@@ -201,6 +221,27 @@ namespace
                 emitByte('\n');
                 return;
             }
+            if (word == "page")
+            {
+                // Forces the next paragraph onto a new page. If the
+                // current line is non-empty, also start a new line so
+                // the break sits before fresh text. Otherwise just flag
+                // the existing line (which is currently the "next" one
+                // pending text).
+                if (!lines.back().empty())
+                    emitByte('\n');
+                pendingPageBreak = true;
+                // If we just opened a new line, the pendingPageBreak set
+                // above was already transferred into pageBreakBefore.back()
+                // — promote it now so the flag actually lives on the new
+                // line rather than waiting for a subsequent \n.
+                if (!lines.back().empty() == false && !pageBreakBefore.empty())
+                {
+                    pageBreakBefore.back() = true;
+                    pendingPageBreak = false;
+                }
+                return;
+            }
             auto setBit = [&](uint8_t bit, bool on) {
                 if (skipping()) return;
                 if (on) curStyle |=  bit;
@@ -220,7 +261,16 @@ namespace
 
             if (word == "fs" && hasParam)
             {
-                if (InHeader())
+                // The FIRST \fs encountered is the document-default size.
+                // Any subsequent \fs — even if seen before the first body
+                // byte (the writer emits one right before a heading at
+                // the document start) — is a body-run override.
+                // Using "no body byte yet" as the header test, as we did
+                // originally, corrupts headerFsHalfPoints when a doc
+                // opens with a heading: the heading's \fs overwrites the
+                // real header size and the editor inherits the heading
+                // size as the global chrome cell size.
+                if (headerFsHalfPoints == 0)
                     headerFsHalfPoints = param;
                 else
                     curHalfPt = param;
@@ -271,6 +321,19 @@ namespace
                     curColorIdx = readerColorMap[param];
                 else
                     curColorIdx = -1;
+                return;
+            }
+
+            // \highlightN — same shape as \cfN but writes to the background
+            // highlight slot. Word also writes \highlightN; LibreOffice
+            // emits \chcbpat or \cb depending on settings — those would
+            // need separate handling and are deferred.
+            if (word == "highlight" && hasParam && colorTblOpenDepth == 0)
+            {
+                if (param >= 0 && param < static_cast<int>(readerColorMap.size()))
+                    curHighlightIdx = readerColorMap[param];
+                else
+                    curHighlightIdx = -1;
                 return;
             }
 
@@ -443,8 +506,12 @@ namespace
             {
                 lines.pop_back();
                 formatRows.pop_back();
+                if (!pageBreakBefore.empty()) pageBreakBefore.pop_back();
             }
-            out.SetLines(std::move(lines), std::move(formatRows));
+            // Make pageBreakBefore exactly line-count sized.
+            pageBreakBefore.resize(lines.size(), false);
+            out.SetLines(std::move(lines), std::move(formatRows),
+                         std::move(pageBreakBefore));
         }
     };
 }

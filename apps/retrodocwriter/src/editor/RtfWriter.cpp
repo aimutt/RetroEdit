@@ -50,7 +50,8 @@ namespace RtfWriter
 {
 
 std::string Write(const FormattedTextBuffer& buf,
-                  FontFace documentFont, int pointSize)
+                  FontFace documentFont, int pointSize,
+                  const Page& page)
 {
     std::string out;
     out.reserve(1024);
@@ -111,6 +112,23 @@ std::string Write(const FormattedTextBuffer& buf,
         out += rgb;
     }
     out += "}\n";
+
+    // Page geometry — emit in twips (1 inch = 1440 twips) so other readers
+    // (LibreOffice, Word) compose paragraphs at the same usable width as
+    // our on-screen WYSIWYG view. Without these, LibreOffice falls back
+    // to its own page-size + margin defaults and wraps lines at a
+    // different column than what we drew.
+    auto toTwips = [](double inches) {
+        return static_cast<int>(inches * 1440.0 + 0.5);
+    };
+    char pageBuf[160];
+    std::snprintf(pageBuf, sizeof(pageBuf),
+        "\\paperw%d\\paperh%d\\margl%d\\margr%d\\margt%d\\margb%d\n",
+        toTwips(page.widthIn),        toTwips(page.heightIn),
+        toTwips(page.marginLeftIn),   toTwips(page.marginRightIn),
+        toTwips(page.marginTopIn),    toTwips(page.marginBottomIn));
+    out += pageBuf;
+
     char fsbuf[32];
     std::snprintf(fsbuf, sizeof(fsbuf), "\\fs%d\n", pointSize * 2);
     out += fsbuf;
@@ -122,6 +140,7 @@ std::string Write(const FormattedTextBuffer& buf,
     int     curFaceIdx = 0;          // index into faceIndex
     int     curHalfPt  = pointSize * 2;
     int     curColorRtf = 0;         // 0 = auto, 1..16 = palette index + 1
+    int     curHighlightRtf = 0;     // 0 = auto/no-highlight, 1..16 = palette + 1
     for (int row = 0; row < buf.LineCount(); ++row)
     {
         const std::string& line = buf.Line(row);
@@ -141,6 +160,10 @@ std::string Write(const FormattedTextBuffer& buf,
                                 || f.color >= Palette::kCount)
                               ? 0
                               : static_cast<int>(f.color) + 1;
+            int wantHighlightRtf = (f.highlight == CharFormat::Inherit
+                                    || f.highlight >= Palette::kCount)
+                                  ? 0
+                                  : static_cast<int>(f.highlight) + 1;
 
             if (wantFaceIdx != curFaceIdx)
             {
@@ -163,6 +186,13 @@ std::string Write(const FormattedTextBuffer& buf,
                 out += buf2;
                 curColorRtf = wantColorRtf;
             }
+            if (wantHighlightRtf != curHighlightRtf)
+            {
+                char buf2[32];
+                std::snprintf(buf2, sizeof(buf2), "\\highlight%d ", wantHighlightRtf);
+                out += buf2;
+                curHighlightRtf = wantHighlightRtf;
+            }
             if (f.style != curStyle)
             {
                 EmitStyleDiff(out, curStyle, f.style);
@@ -171,8 +201,17 @@ std::string Write(const FormattedTextBuffer& buf,
             EmitChar(out, line[c]);
         }
         if (row + 1 < buf.LineCount())
+        {
             out += "\\par\n";
+            // Forced page break before the next row → emit \page right
+            // after the \par so RTF readers (Word/WordPad/LibreOffice)
+            // start the following paragraph on a new page.
+            if (buf.PageBreakBefore(row + 1))
+                out += "\\page\n";
+        }
     }
+    // Note: a page break flagged on row 0 is effectively no-op (the doc
+    // already starts on its first page). We don't emit a leading \page.
 
     // Clean up trailing style so the closing brace doesn't leave a
     // dangling state for any reader that surfaces it.
@@ -185,11 +224,12 @@ std::string Write(const FormattedTextBuffer& buf,
 
 bool WriteFile(const std::string& path,
                const FormattedTextBuffer& buf,
-               FontFace documentFont, int pointSize)
+               FontFace documentFont, int pointSize,
+               const Page& page)
 {
     std::ofstream file(path, std::ios::out | std::ios::trunc | std::ios::binary);
     if (!file.is_open()) return false;
-    std::string body = Write(buf, documentFont, pointSize);
+    std::string body = Write(buf, documentFont, pointSize, page);
     file.write(body.data(), static_cast<std::streamsize>(body.size()));
     return file.good();
 }

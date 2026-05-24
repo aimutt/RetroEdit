@@ -30,13 +30,15 @@ namespace CharStyle
 struct CharFormat
 {
     static constexpr uint8_t Inherit = 0xFF;
-    uint8_t style = 0;            // CharStyle bits
-    uint8_t face  = Inherit;      // FontFace enum index, or Inherit
-    uint8_t size  = Inherit;      // FontSize enum index, or Inherit
-    uint8_t color = Inherit;      // Palette index (0..15), or Inherit
+    uint8_t style     = 0;        // CharStyle bits
+    uint8_t face      = Inherit;  // FontFace enum index, or Inherit
+    uint8_t size      = Inherit;  // FontSize enum index, or Inherit
+    uint8_t color     = Inherit;  // Palette index (0..15) — foreground
+    uint8_t highlight = Inherit;  // Palette index (0..15) — background highlight
 
     bool IsPlain() const
     {
-        return style == 0 && face == Inherit && size == Inherit && color == Inherit;
+        return style == 0 && face == Inherit && size == Inherit
+            && color == Inherit && highlight == Inherit;
     }
 };

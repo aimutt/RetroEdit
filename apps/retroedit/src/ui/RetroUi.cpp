@@ -1343,7 +1343,9 @@ void RetroUi::DrawWordCountDialog(ScreenBuffer& buffer, const EditorUiState& sta
 
 void RetroUi::DrawFontDialog(ScreenBuffer& buffer, const EditorUiState& state)
 {
-    const int faceCount  = FontFaceCount();
+    // RetroEdit's cell-grid rendering requires monospace faces only — hide
+    // any proportional faces the shared enum exposes.
+    const int faceCount  = FontFaceMonospaceCount();
     const int sizeCount  = FontSizeCount();
     const int listRows   = std::max(faceCount, sizeCount);
 

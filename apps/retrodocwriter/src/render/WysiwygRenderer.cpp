@@ -94,11 +94,20 @@ namespace
     struct CharRender
     {
         char        ch;
-        int         advance;     // px
+        int         advance;       // integer pixel advance used for drawing
+        // Sub-pixel-precision advance, used ONLY for wrap-budget math so
+        // the on-screen wrap column matches LibreOffice / print (which
+        // both lay out at high enough resolution that integer rounding
+        // is negligible). At dpi=72 with small ptSize, the integer
+        // `advance` is truncated by 0.5+ pixels per char, which adds up
+        // to a few extra chars per line vs. the "true" font metric.
+        double      advanceSubpx;
         int         lineHeight;  // px (LineHeight of the cache used)
         GlyphCache* cache;
         uint8_t     style;
         Color       color;       // resolved per-char foreground (theme default if Inherit)
+        bool        hasHighlight;
+        Color       highlight;   // background highlight (only valid when hasHighlight)
     };
 
     // Per-segment metadata after pixel-based wrap. `startCol` is the
@@ -133,10 +142,14 @@ namespace
             return out;
         }
 
-        int segStart   = 0;
-        int xAccum     = 0;
-        int lastBreak  = -1; // source col of last whitespace inside current seg
-        int segHeight  = 0;
+        int    segStart  = 0;
+        // Wrap-budget accumulator runs in sub-pixel precision so the
+        // wrap column matches what LibreOffice / print compute (both
+        // use higher-resolution metrics than the 16-px TTF we sample
+        // for screen drawing).
+        double xAccum    = 0.0;
+        int    lastBreak = -1;
+        int    segHeight = 0;
 
         auto emit = [&](int endExcl) {
             int h = segHeight > 0 ? segHeight : emptyLineHeight;
@@ -147,26 +160,24 @@ namespace
         for (int c = 0; c < n; ++c)
         {
             const CharRender& cr = chars[c];
-            if (xAccum + cr.advance > usableW && c > segStart)
+            if (xAccum + cr.advanceSubpx > usableW && c > segStart)
             {
                 int breakAt = (lastBreak > segStart) ? lastBreak : c;
                 emit(breakAt);
-                // Skip the breaking whitespace if we broke on one.
                 segStart = (breakAt == c) ? c : (breakAt + 1);
-                xAccum   = 0;
+                xAccum   = 0.0;
                 segHeight = 0;
                 lastBreak = -1;
-                // Restart accumulation from segStart including c.
                 for (int k = segStart; k <= c; ++k)
                 {
-                    xAccum += chars[k].advance;
+                    xAccum += chars[k].advanceSubpx;
                     if (chars[k].lineHeight > segHeight) segHeight = chars[k].lineHeight;
                     if (chars[k].ch == ' ' || chars[k].ch == '\t') lastBreak = k;
                 }
             }
             else
             {
-                xAccum += cr.advance;
+                xAccum += cr.advanceSubpx;
                 if (cr.lineHeight > segHeight) segHeight = cr.lineHeight;
                 if (cr.ch == ' ' || cr.ch == '\t') lastBreak = c;
             }
@@ -185,7 +196,52 @@ WysiwygRenderer::WysiwygRenderer(SDL_Renderer* sdl, const Theme& theme)
 {
 }
 
-WysiwygRenderer::~WysiwygRenderer() = default;
+WysiwygRenderer::~WysiwygRenderer()
+{
+    for (auto& kv : m_hiRes)
+    {
+        if (kv.second.font)
+            TTF_CloseFont(static_cast<TTF_Font*>(kv.second.font));
+    }
+}
+
+double WysiwygRenderer::SubpxAdvance(FontFace face, int pxSize,
+                                     unsigned int codepoint)
+{
+    // High-precision per-em advance: open the font at a large reference
+    // size (1000 px), read the integer advance there, scale back down to
+    // the requested rendered pixel height. At kRef=1000 a single-pixel
+    // rounding error is 0.1 % — negligible — so the resulting sub-pixel
+    // advance at small ptSizes is accurate to a fraction of a pixel.
+    // `pxSize` must be the actual rendered pixel height of the glyph
+    // (point size scaled by the screen DPI), NOT the raw point size —
+    // otherwise the wrap budget undershoots the rendered line width
+    // whenever the renderer's effective DPI != 72.
+    constexpr float kRef = 1000.0f;
+    int key = static_cast<int>(face);
+    auto it = m_hiRes.find(key);
+    TTF_Font* hires = nullptr;
+    if (it != m_hiRes.end())
+    {
+        hires = static_cast<TTF_Font*>(it->second.font);
+    }
+    else
+    {
+        std::string path = ResolveAssetPath(FontFaceFile(face));
+        hires = TTF_OpenFont(path.c_str(), kRef);
+        HiResEntry e; e.font = hires;
+        m_hiRes[key] = e;
+    }
+    if (!hires) return pxSize / 2.0;
+    int minx, maxx, miny, maxy, adv;
+    if (TTF_GetGlyphMetrics(hires, static_cast<Uint32>(codepoint),
+                            &minx, &maxx, &miny, &maxy, &adv) && adv > 0)
+    {
+        return (static_cast<double>(adv) / static_cast<double>(kRef))
+             * static_cast<double>(pxSize);
+    }
+    return pxSize / 2.0;
+}
 
 int WysiwygRenderer::ComputeCharsPerLine(FontFace face, int ptSize,
                                           double leftMarginIn, double rightMarginIn)
@@ -243,7 +299,8 @@ static void BuildLayoutPass(LayoutPass& out,
                             FontFace defaultFace, int defaultPointSize,
                             Color themeNormalText,
                             int usableW,
-                            std::function<GlyphCache*(FontFace, int)> cacheFor)
+                            std::function<GlyphCache*(FontFace, int)> cacheFor,
+                            std::function<double(FontFace, int, unsigned int)> subpxFor)
 {
     int n = buf.LineCount();
     out.chars.clear();
@@ -270,8 +327,18 @@ static void BuildLayoutPass(LayoutPass& out,
             cr.style       = f.style;
             cr.cache       = cache;
             cr.advance     = cache ? cache->GlyphAdvance(cp, f.style) : ptSz / 2;
+            cr.advanceSubpx = subpxFor ? subpxFor(face, ptSz, static_cast<unsigned int>(cp))
+                                       : static_cast<double>(cr.advance);
             cr.lineHeight  = cache ? cache->LineHeight() : ptSz;
             cr.color       = ResolveColor(f, themeNormalText);
+            // Highlight: only set when format.highlight is an explicit
+            // palette index. Inherit/OOB → no highlight rect drawn.
+            cr.hasHighlight = false;
+            if (f.highlight != CharFormat::Inherit && f.highlight < Palette::kCount)
+            {
+                cr.hasHighlight = true;
+                cr.highlight    = Palette::ColorAt(f.highlight);
+            }
             out.chars[li].push_back(cr);
         }
         out.segments[li] = WrapLinePixels(out.chars[li], usableW, out.defaultLineHeight);
@@ -281,6 +348,54 @@ static void BuildLayoutPass(LayoutPass& out,
 // ---------------------------------------------------------------------------
 // ClampScrollForCursor
 // ---------------------------------------------------------------------------
+
+std::vector<WysiwygRenderer::VisualLine>
+WysiwygRenderer::ComputeVisualLayout(const DrawContext& ctx)
+{
+    std::vector<VisualLine> out;
+    if (!ctx.buffer) return out;
+    const int dpi = std::max(48, ctx.screenDpi);
+
+    const int pageW   = static_cast<int>(kPaperWidthIn  * dpi);
+    const int mLeft   = static_cast<int>(ctx.margins.leftIn  * dpi);
+    const int mRight  = static_cast<int>(ctx.margins.rightIn * dpi);
+    const int usableW = std::max(1, pageW - mLeft - mRight);
+
+    LayoutPass pass;
+    BuildLayoutPass(pass, *ctx.buffer, ctx.formatted,
+                    ctx.face, ctx.pointSize, m_theme.normalText, usableW,
+                    [&](FontFace f, int p) { return CacheFor(f, p, dpi); },
+                    [&](FontFace f, int p, unsigned int cp) {
+                        int px = std::max(1, (p * dpi + 36) / 72);
+                        return SubpxAdvance(f, px, cp);
+                    });
+
+    for (int li = 0; li < ctx.buffer->LineCount(); ++li)
+    {
+        const auto& chars = pass.chars[li];
+        const auto& segs  = pass.segments[li];
+        for (const auto& seg : segs)
+        {
+            VisualLine vl;
+            vl.bufferRow = li;
+            vl.startCol  = seg.startCol;
+            vl.endCol    = seg.endCol;
+            vl.charXs.reserve(static_cast<size_t>(seg.endCol - seg.startCol + 1));
+            // Sub-pixel accumulator rounded to int — matches the draw
+            // loop's glyph positions, so cursor-arrow navigation lands
+            // exactly under the rendered chars.
+            double cum = 0.0;
+            vl.charXs.push_back(0);
+            for (int c = seg.startCol; c < seg.endCol; ++c)
+            {
+                cum += chars[c].advanceSubpx;
+                vl.charXs.push_back(static_cast<int>(cum + 0.5));
+            }
+            out.push_back(std::move(vl));
+        }
+    }
+    return out;
+}
 
 int WysiwygRenderer::ClampScrollForCursor(const DrawContext& ctx)
 {
@@ -300,7 +415,11 @@ int WysiwygRenderer::ClampScrollForCursor(const DrawContext& ctx)
 
     BuildLayoutPass(pass, *ctx.buffer, ctx.formatted,
                     ctx.face, ctx.pointSize, m_theme.normalText, usableW,
-                    [&](FontFace f, int p) { return CacheFor(f, p, dpi); });
+                    [&](FontFace f, int p) { return CacheFor(f, p, dpi); },
+                    [&](FontFace f, int p, unsigned int cp) {
+                        int px = std::max(1, (p * dpi + 36) / 72);
+                        return SubpxAdvance(f, px, cp);
+                    });
 
     int row = std::clamp(ctx.cursorRow, 0, std::max(0, ctx.buffer->LineCount() - 1));
 
@@ -314,6 +433,12 @@ int WysiwygRenderer::ClampScrollForCursor(const DrawContext& ctx)
 
     for (int li = 0; li < ctx.buffer->LineCount() && !found; ++li)
     {
+        // Forced page break (Ctrl+Enter / RTF \page) before this row.
+        if (li > 0 && ctx.formatted && ctx.formatted->PageBreakBefore(li))
+        {
+            ++curPage;
+            yInPage = 0;
+        }
         const auto& segs = pass.segments[li];
         for (size_t s = 0; s < segs.size(); ++s)
         {
@@ -377,7 +502,11 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
     LayoutPass pass;
     BuildLayoutPass(pass, *ctx.buffer, ctx.formatted,
                     ctx.face, ctx.pointSize, m_theme.normalText, usableW,
-                    [&](FontFace f, int p) { return CacheFor(f, p, dpi); });
+                    [&](FontFace f, int p) { return CacheFor(f, p, dpi); },
+                    [&](FontFace f, int p, unsigned int cp) {
+                        int px = std::max(1, (p * dpi + 36) / 72);
+                        return SubpxAdvance(f, px, cp);
+                    });
 
     int pageX = ctx.editorAreaPxX + (ctx.editorAreaPxW - pageW) / 2;
     if (pageX < ctx.editorAreaPxX) pageX = ctx.editorAreaPxX;
@@ -402,6 +531,11 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
         int yInPage = 0;
         for (int li = 0; li < ctx.buffer->LineCount(); ++li)
         {
+            if (li > 0 && ctx.formatted && ctx.formatted->PageBreakBefore(li))
+            {
+                ++totalPages;
+                yInPage = 0;
+            }
             for (const auto& seg : pass.segments[li])
             {
                 if (yInPage + seg.height > usableH)
@@ -447,6 +581,11 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
     {
         const auto& chars = pass.chars[li];
         const auto& segs  = pass.segments[li];
+        if (li > 0 && ctx.formatted && ctx.formatted->PageBreakBefore(li))
+        {
+            ++curPage;
+            yInPage = 0;
+        }
         for (size_t s = 0; s < segs.size(); ++s)
         {
             int h = segs[s].height;
@@ -470,7 +609,71 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
             int segLo = segs[s].startCol;
             int segHi = segs[s].endCol;
 
-            // Selection highlight (under glyphs).
+            // Sub-pixel positioning: accumulate each character's sub-pixel
+            // advance as a double, then round to the nearest integer pixel
+            // when emitting a glyph. This makes the cumulative line width
+            // match what the wrap budget assumed (so lines fill out to the
+            // right margin), while glyph emit positions stay integer-aligned.
+            // xOfCol[c - segLo] is the integer pixel x offset (from the
+            // segment's left edge) at column c. Size = (segHi - segLo + 1):
+            // the trailing entry is the x just past the last glyph,
+            // i.e. the cursor position when the cursor sits at end-of-seg.
+            std::vector<int> xOfCol(static_cast<size_t>(segHi - segLo + 1));
+            {
+                double cum = 0.0;
+                for (int c = segLo; c <= segHi; ++c)
+                {
+                    xOfCol[static_cast<size_t>(c - segLo)] =
+                        static_cast<int>(cum + 0.5);
+                    if (c < segHi) cum += chars[c].advanceSubpx;
+                }
+            }
+            auto xAt = [&](int col) -> int {
+                int idx = std::clamp(col - segLo, 0, static_cast<int>(xOfCol.size()) - 1);
+                return usableX + xOfCol[static_cast<size_t>(idx)];
+            };
+
+            // Per-char highlight rects (drawn before the selection rect so
+            // the selection's reverse-video visually wins where they overlap).
+            {
+                int hRunStart = -1;
+                Color hRunColor{};
+                auto flushHighlight = [&](int rightX) {
+                    if (hRunStart < 0) return;
+                    int leftX = xAt(hRunStart);
+                    int width = rightX - leftX;
+                    if (width > 0)
+                        FillRect(m_sdl, leftX, textY, width, h, hRunColor);
+                    hRunStart = -1;
+                };
+                for (int c = segLo; c < segHi; ++c)
+                {
+                    const CharRender& cr = chars[c];
+                    if (cr.hasHighlight)
+                    {
+                        if (hRunStart < 0)
+                        {
+                            hRunStart = c;
+                            hRunColor = cr.highlight;
+                        }
+                        else if (!(cr.highlight.r == hRunColor.r
+                                && cr.highlight.g == hRunColor.g
+                                && cr.highlight.b == hRunColor.b
+                                && cr.highlight.a == hRunColor.a))
+                        {
+                            flushHighlight(xAt(c));
+                            hRunStart = c;
+                            hRunColor = cr.highlight;
+                        }
+                    }
+                    else if (hRunStart >= 0)
+                    {
+                        flushHighlight(xAt(c));
+                    }
+                }
+                flushHighlight(xAt(segHi));
+            }
+
             if (ctx.selActive && li >= sr && li <= er)
             {
                 int selLo = (li == sr) ? sc : 0;
@@ -479,17 +682,14 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
                 int hiHi = std::min(selHi, segHi);
                 if (hiHi > hiLo)
                 {
-                    int xLo = usableX;
-                    for (int c = segLo; c < hiLo; ++c) xLo += chars[c].advance;
-                    int xHi = xLo;
-                    for (int c = hiLo; c < hiHi; ++c) xHi += chars[c].advance;
+                    int xLo = xAt(hiLo);
+                    int xHi = xAt(hiHi);
                     FillRect(m_sdl, xLo, textY, std::max(2, xHi - xLo), h,
                              m_theme.reverseBackground);
                 }
             }
 
             // Glyphs.
-            int x = usableX;
             for (int c = segLo; c < segHi; ++c)
             {
                 const CharRender& cr = chars[c];
@@ -507,17 +707,36 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
                 }
 
                 if (cp > U' ' && cr.cache)
-                    cr.cache->DrawGlyphAt(cp, x, textY, fg, cr.style);
-                x += cr.advance;
+                    cr.cache->DrawGlyphAt(cp, xAt(c), textY, fg, cr.style);
             }
 
             // Cursor.
             if (ctx.cursorVisible && li == ctx.cursorRow
                 && ctx.cursorCol >= segLo && ctx.cursorCol <= segHi)
             {
-                int cx = usableX;
-                for (int c = segLo; c < ctx.cursorCol && c < segHi; ++c)
-                    cx += chars[c].advance;
+                int cx = xAt(ctx.cursorCol);
+                // Snap the cursor to the right margin when the user is at
+                // the very end of the buffer line on the line's last
+                // visual segment AND typing one more character would wrap.
+                // Without the snap, the cursor can sit up to ~one char
+                // width inside the margin (the leftover sub-pixel space
+                // below one full advance). Snapping puts the cursor right
+                // at the margin so "cursor on the margin" is the clear
+                // visual cue that the next keystroke will wrap.
+                bool atEndOfBufferLine =
+                    ctx.cursorCol == static_cast<int>(chars.size());
+                bool isLastSegment = (s + 1 == segs.size());
+                if (atEndOfBufferLine && isLastSegment)
+                {
+                    double advNext = (segHi > segLo)
+                        ? chars[segHi - 1].advanceSubpx
+                        : SubpxAdvance(ctx.face,
+                                       std::max(1, (ctx.pointSize * dpi + 36) / 72),
+                                       static_cast<unsigned int>('M'));
+                    int margin = usableX + usableW;
+                    if (cx + static_cast<int>(advNext + 0.5) > margin)
+                        cx = margin - 2;
+                }
                 FillRect(m_sdl, cx, textY, 2, h, m_theme.brightText);
             }
 

@@ -41,22 +41,24 @@ bool RichFileDocument::LoadRtf(const std::string& path)
     return true;
 }
 
-bool RichFileDocument::Save(FontFace font, int pointSize)
+bool RichFileDocument::Save(FontFace font, int pointSize,
+                            const RtfWriter::Page& page)
 {
     if (m_filename.empty()) return false;
     bool ok = IsRtfPath(m_filename)
-            ? SaveRtf  (m_filename, font, pointSize)
+            ? SaveRtf  (m_filename, font, pointSize, page)
             : SavePlain(m_filename);
     if (!ok) return false;
     m_dirty = false;
     return true;
 }
 
-bool RichFileDocument::SaveAs(const std::string& path, FontFace font, int pointSize)
+bool RichFileDocument::SaveAs(const std::string& path, FontFace font, int pointSize,
+                              const RtfWriter::Page& page)
 {
     std::string old = m_filename;
     m_filename = path;
-    if (!Save(font, pointSize))
+    if (!Save(font, pointSize, page))
     {
         m_filename = old;
         return false;
@@ -65,9 +67,10 @@ bool RichFileDocument::SaveAs(const std::string& path, FontFace font, int pointS
 }
 
 bool RichFileDocument::SaveRtf(const std::string& path,
-                               FontFace font, int pointSize) const
+                               FontFace font, int pointSize,
+                               const RtfWriter::Page& page) const
 {
-    return RtfWriter::WriteFile(path, m_buffer, font, pointSize);
+    return RtfWriter::WriteFile(path, m_buffer, font, pointSize, page);
 }
 
 bool RichFileDocument::LoadPlain(const std::string& path)

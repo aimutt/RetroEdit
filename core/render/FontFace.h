@@ -9,6 +9,14 @@ enum class FontFace
     IBMPlexMono,
     IBMPlexMonoBold,
     VT323,
+    EBGaramond,
+    EBGaramondBold,
+    SourceSerif,
+    SourceSerifBold,
+    SourceSans,
+    SourceSansBold,
+    OpenSans,
+    OpenSansBold,
     Count_
 };
 
@@ -23,6 +31,14 @@ inline const char* FontFaceFile(FontFace face)
         case FontFace::IBMPlexMono:         return "fonts/IBMPlexMono-Regular.ttf";
         case FontFace::IBMPlexMonoBold:     return "fonts/IBMPlexMono-Bold.ttf";
         case FontFace::VT323:               return "fonts/VT323-Regular.ttf";
+        case FontFace::EBGaramond:          return "fonts/EBGaramond-Regular.ttf";
+        case FontFace::EBGaramondBold:      return "fonts/EBGaramond-Bold.ttf";
+        case FontFace::SourceSerif:         return "fonts/SourceSerif4-Regular.ttf";
+        case FontFace::SourceSerifBold:     return "fonts/SourceSerif4-Bold.ttf";
+        case FontFace::SourceSans:          return "fonts/SourceSans3-Regular.ttf";
+        case FontFace::SourceSansBold:      return "fonts/SourceSans3-Bold.ttf";
+        case FontFace::OpenSans:            return "fonts/OpenSans-Regular.ttf";
+        case FontFace::OpenSansBold:        return "fonts/OpenSans-Bold.ttf";
         default:                            return "fonts/CascadiaMono-Regular.ttf";
     }
 }
@@ -38,6 +54,14 @@ inline const char* FontFaceName(FontFace face)
         case FontFace::IBMPlexMono:         return "IBM Plex Mono";
         case FontFace::IBMPlexMonoBold:     return "IBM Plex Mono Bold";
         case FontFace::VT323:               return "VT323 (CRT)";
+        case FontFace::EBGaramond:          return "EB Garamond";
+        case FontFace::EBGaramondBold:      return "EB Garamond Bold";
+        case FontFace::SourceSerif:         return "Source Serif";
+        case FontFace::SourceSerifBold:     return "Source Serif Bold";
+        case FontFace::SourceSans:          return "Source Sans";
+        case FontFace::SourceSansBold:      return "Source Sans Bold";
+        case FontFace::OpenSans:            return "Open Sans";
+        case FontFace::OpenSansBold:        return "Open Sans Bold";
         default:                            return "Cascadia Mono";
     }
 }
@@ -55,6 +79,14 @@ inline const char* FontFaceFamily(FontFace face)
         case FontFace::IBMPlexMono:         return "IBM Plex Mono";
         case FontFace::IBMPlexMonoBold:     return "IBM Plex Mono";
         case FontFace::VT323:               return "VT323";
+        case FontFace::EBGaramond:          return "EB Garamond";
+        case FontFace::EBGaramondBold:      return "EB Garamond";
+        case FontFace::SourceSerif:         return "Source Serif 4";
+        case FontFace::SourceSerifBold:     return "Source Serif 4";
+        case FontFace::SourceSans:          return "Source Sans 3";
+        case FontFace::SourceSansBold:      return "Source Sans 3";
+        case FontFace::OpenSans:            return "Open Sans";
+        case FontFace::OpenSansBold:        return "Open Sans";
         default:                            return "Cascadia Mono";
     }
 }
@@ -63,10 +95,47 @@ inline bool FontFaceIsBold(FontFace face)
 {
     return face == FontFace::CascadiaMonoBold
         || face == FontFace::JetBrainsMonoBold
-        || face == FontFace::IBMPlexMonoBold;
+        || face == FontFace::IBMPlexMonoBold
+        || face == FontFace::EBGaramondBold
+        || face == FontFace::SourceSerifBold
+        || face == FontFace::SourceSansBold
+        || face == FontFace::OpenSansBold;
+}
+
+// True for fixed-pitch faces (uniform per-glyph advance). The cell-grid
+// chrome and RetroEdit's editor rely on uniform advance; RetroDocWriter's
+// WysiwygRenderer measures each glyph independently and works with either.
+inline bool FontFaceIsMonospace(FontFace face)
+{
+    switch (face)
+    {
+        case FontFace::CascadiaMono:
+        case FontFace::CascadiaMonoBold:
+        case FontFace::JetBrainsMono:
+        case FontFace::JetBrainsMonoBold:
+        case FontFace::IBMPlexMono:
+        case FontFace::IBMPlexMonoBold:
+        case FontFace::VT323:
+            return true;
+        default:
+            return false;
+    }
 }
 
 inline int FontFaceCount() { return static_cast<int>(FontFace::Count_); }
+
+// Count of monospace faces at the BEGINNING of the enum. RetroEdit's
+// cell-grid renderer requires uniform-advance glyphs, so its font dialog
+// uses this count (instead of FontFaceCount) to hide proportional faces.
+// Assumes monospace faces are contiguous at the start of the enum, which
+// the layout above maintains.
+inline int FontFaceMonospaceCount()
+{
+    int n = 0;
+    while (n < FontFaceCount() && FontFaceIsMonospace(static_cast<FontFace>(n)))
+        ++n;
+    return n;
+}
 
 // Reverse lookup: RTF font-table family name → FontFace. Returns true and
 // sets `out` on a match; returns false when the family string doesn't
@@ -88,9 +157,16 @@ inline bool FontFaceFromFamilyName(const char* name, FontFace& out)
         }
         return *a == 0 && *b == 0;
     };
-    if (iequals(name, "Cascadia Mono")) { out = FontFace::CascadiaMono;  return true; }
-    if (iequals(name, "JetBrains Mono")){ out = FontFace::JetBrainsMono; return true; }
-    if (iequals(name, "IBM Plex Mono")) { out = FontFace::IBMPlexMono;   return true; }
-    if (iequals(name, "VT323"))         { out = FontFace::VT323;         return true; }
+    if (iequals(name, "Cascadia Mono"))   { out = FontFace::CascadiaMono;  return true; }
+    if (iequals(name, "JetBrains Mono"))  { out = FontFace::JetBrainsMono; return true; }
+    if (iequals(name, "IBM Plex Mono"))   { out = FontFace::IBMPlexMono;   return true; }
+    if (iequals(name, "VT323"))           { out = FontFace::VT323;         return true; }
+    if (iequals(name, "EB Garamond"))     { out = FontFace::EBGaramond;    return true; }
+    if (iequals(name, "Source Serif 4"))  { out = FontFace::SourceSerif;   return true; }
+    if (iequals(name, "Source Serif"))    { out = FontFace::SourceSerif;   return true; }
+    if (iequals(name, "Source Sans 3"))   { out = FontFace::SourceSans;    return true; }
+    if (iequals(name, "Source Sans"))     { out = FontFace::SourceSans;    return true; }
+    if (iequals(name, "Source Sans Pro")) { out = FontFace::SourceSans;    return true; }
+    if (iequals(name, "Open Sans"))       { out = FontFace::OpenSans;      return true; }
     return false;
 }

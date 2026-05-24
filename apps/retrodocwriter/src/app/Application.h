@@ -37,6 +37,7 @@ enum class PromptMode
     FontDialog,     // Font picker
     ThemeDialog,    // Theme picker (Options > Theme...)
     ColorDialog,    // Per-character text-color picker (Format > Text Color...)
+    HighlightDialog,// Per-character highlight picker (Format > Highlight Color...)
     ConfirmWordWrap,// Y = wrap on, N = wrap off, Esc = cancel
     WordCountDialog,// shows live word count + status-bar toggle checkbox
     AddWordDialog,  // text input -> Dictionary::AddWord
@@ -162,6 +163,24 @@ private:
     void OpenColorDialog();
     void ApplyColorDialogSelection();
 
+    // Per-character background highlight (reuses the color picker dialog)
+    void OpenHighlightDialog();
+    void ApplyHighlightDialogSelection();
+
+    // Insert a paragraph break that also forces the next paragraph onto a
+    // new page (Ctrl+Enter / Format > Insert Page Break).
+    void InsertPageBreak();
+
+    // Builds a DrawContext snapshot of the current document state. Used by
+    // Render() and by the cursor-arrow keys (MoveCursorUp/Down) so both
+    // see the exact same visual layout.
+    WysiwygRenderer::DrawContext BuildWysiwygDrawContext() const;
+
+    // Builds the page-geometry struct for the RTF writer from the
+    // document's current margins. US Letter is hardcoded as the paper
+    // size (matches WysiwygRenderer's kPaperWidthIn/kPaperHeightIn).
+    RtfWriter::Page  CurrentRtfPage() const;
+
     // Word wrap
     void OpenWordWrapDialog();
     void SetWordWrap(bool on);
@@ -198,8 +217,7 @@ private:
     void ToggleStrikethrough();
     void ApplyStyleAction(uint8_t bit);
 
-    // WYSIWYG mode and Margins dialog
-    void ToggleWysiwyg();
+    // Margins dialog
     void OpenMarginsDialog();
     void CloseMarginsDialog(bool commit);
     void MarginCycleField(int dir);
@@ -259,6 +277,21 @@ private:
     uint8_t      m_currentColor          = CharFormat::Inherit;
     int          m_colorDialogFocusIdx   = 0;
 
+    // Per-character background highlight (Format > Highlight Color...).
+    // Same UX as text color but writes a different CharFormat field.
+    uint8_t      m_currentHighlight      = CharFormat::Inherit;
+
+    // Per-character face/size for next-typed input when the Font dialog is
+    // committed without a selection (mirrors m_currentColor's pattern).
+    // Inherit means "follow the document default" (m_fontSettings) — that
+    // is the initial state. Picking a face/size in the dialog without a
+    // selection sets these; existing text (which carries Inherit-face/size
+    // by default) is unchanged. To restyle existing text the user must
+    // Select All first, then pick a face/size — the dialog pins the
+    // selected range via SetFaceInRange / SetSizeInRange.
+    uint8_t      m_currentFace           = CharFormat::Inherit;
+    uint8_t      m_currentSize           = CharFormat::Inherit;
+
     // Cached window pixel dimensions and screen-buffer dimensions —
     // recomputed when the window is resized or the font changes.
     int          m_windowWidth           = 0;
@@ -287,10 +320,6 @@ private:
     std::string              m_printToText;
     std::string              m_printMarginText[4]; // top, bottom, left, right
 
-    // WYSIWYG mode (per-document, persisted via sidecar).
-    // RetroDocWriter is WYSIWYG by default; per-file sidecars may still flip
-    // it off for a given document (sidecar load applies after construction).
-    bool             m_wysiwygEnabled  = true;
     WysiwygMargins   m_margins;
     int              m_wysiwygScrollPx = 0;
     std::unique_ptr<WysiwygRenderer> m_wysiwyg;

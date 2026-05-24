@@ -19,10 +19,8 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
 {
     DrawMenuBar(buffer, state.menuBarActive, state.activeMenu);
     DrawTitleBar(buffer, state.filename, state.dirty);
-    // In WYSIWYG mode, leave the editor cells empty so the proportional
-    // overlay (drawn after RetroRenderer's cell pass) shows through.
-    if (state.textBuffer && !state.wysiwygEnabled)
-        DrawEditorArea(buffer, *state.textBuffer, state.viewportTop, cursor, state);
+    // Editor cells stay empty — the proportional overlay (drawn after
+    // RetroRenderer's cell pass) provides the document view.
     DrawStatusBar(buffer, cursor, state);
     DrawSeparator(buffer, m_layout.ROW_SEP_BOT);
     DrawFunctionKeyBar(buffer);
@@ -339,10 +337,8 @@ namespace
     // when "Off" is wider than the (empty) static shortcut.
     std::string LiveShortcut(int menuIdx, int itemIdx, const MenuItemDef& item,
                              bool wordWrap, bool showWordCount,
-                             bool spellCheckEnabled, bool highlightMisspelled,
-                             bool wysiwygEnabled)
+                             bool spellCheckEnabled, bool highlightMisspelled)
     {
-        (void)wysiwygEnabled; // RetroDocWriter is always WYSIWYG; no toggle item.
         // Options is menu idx 7 in RetroDocWriter (after Format was inserted at 2).
         // Options menu (menuIdx 7) after Theme... inserted at item 1:
         // 0=Font, 1=Theme, 2=WordWrap, 3=WordCount, 4=Spell, 5=Highlight.
@@ -360,7 +356,6 @@ namespace
     DropdownRect ComputeDropdownRect(int menuIdx, int screenColumns,
                                      bool wordWrap, bool showWordCount,
                                      bool spellCheckEnabled, bool highlightMisspelled,
-                                     bool wysiwygEnabled,
                                      const Layout& layout)
     {
         DropdownRect r{ 0, layout.ROW_SEP_TOP, 0, 0 };
@@ -376,8 +371,7 @@ namespace
             int w = static_cast<int>(item.label.size());
             std::string sc = LiveShortcut(menuIdx, i, item,
                                           wordWrap, showWordCount,
-                                          spellCheckEnabled, highlightMisspelled,
-                                          wysiwygEnabled);
+                                          spellCheckEnabled, highlightMisspelled);
             if (!sc.empty())
                 w += static_cast<int>(sc.size()) + 2; // two-space gap
             innerWidth = std::max(innerWidth, w);
@@ -408,7 +402,6 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
         menuIdx, buffer.Columns(),
         state.wordWrap, state.showWordCount,
         state.spellCheckEnabled, state.highlightMisspelled,
-        state.wysiwygEnabled,
         m_layout);
 
     int startCol  = rect.startCol;
@@ -464,8 +457,7 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
             std::string shortcut = LiveShortcut(menuIdx, i, item,
                                                 state.wordWrap, state.showWordCount,
                                                 state.spellCheckEnabled,
-                                                state.highlightMisspelled,
-                                                state.wysiwygEnabled);
+                                                state.highlightMisspelled);
             if (!shortcut.empty())
             {
                 Color scFg = isHighlighted ? m_theme.reverseForeground : m_theme.dimText;
@@ -505,14 +497,12 @@ int RetroUi::HitTestMenuBar(int cellCol) const
 int RetroUi::HitTestDropdownItem(int menuIdx, int cellCol, int cellRow,
                                  int screenColumns,
                                  bool wordWrap, bool showWordCount,
-                                 bool spellCheckEnabled, bool highlightMisspelled,
-                                 bool wysiwygEnabled) const
+                                 bool spellCheckEnabled, bool highlightMisspelled) const
 {
     DropdownRect rect = ComputeDropdownRect(
         menuIdx, screenColumns,
         wordWrap, showWordCount,
         spellCheckEnabled, highlightMisspelled,
-        wysiwygEnabled,
         m_layout);
     if (rect.outerWidth <= 0 || rect.numItems <= 0) return -1;
 
@@ -1684,7 +1674,9 @@ void RetroUi::DrawColorDialog(ScreenBuffer& buffer, const EditorUiState& state)
 
     DrawBox(buffer, x, y, outerW, outerH, fg, bg);
 
-    const char* title = " Text Color ";
+    const char* title = state.colorDialogIsHighlight
+                          ? " Highlight Color "
+                          : " Text Color ";
     int titleX = x + (outerW - static_cast<int>(std::strlen(title))) / 2;
     buffer.WriteText(titleX, y, title, bright, bg);
 
