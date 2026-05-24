@@ -25,6 +25,7 @@ void RetroUi::Draw(ScreenBuffer& buffer, const Cursor& cursor, const EditorUiSta
     DrawStatusBar(buffer, cursor, state);
     DrawSeparator(buffer, m_layout.ROW_SEP_BOT);
     DrawFunctionKeyBar(buffer);
+    DrawWysiwygScrollbar(buffer, state);
 
     // Overlays drawn last so they appear on top
     if (state.menuOpen)
@@ -439,6 +440,19 @@ void RetroUi::DrawScrollbar(ScreenBuffer& buffer, int x, int y, int height,
     ThumbExtents t = ComputeThumbExtents(height, totalItems, visibleItems, scrollTop);
     for (int r = 0; r < t.size; ++r)
         buffer.PutChar(x, y + t.top + r, U'█', thumb, bg);
+}
+
+void RetroUi::DrawWysiwygScrollbar(ScreenBuffer& buffer, const EditorUiState& state)
+{
+    // Right-most chrome column over the editor row range. Application
+    // narrows the WYSIWYG paint rect by one cell, so this column is
+    // reserved exclusively for the scrollbar.
+    const int x      = buffer.Columns() - 1;
+    const int y      = m_layout.ROW_EDITOR_FIRST;
+    const int height = m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1;
+    DrawScrollbar(buffer, x, y, height,
+                  state.wysiwygTotalDocPx, state.wysiwygEditorPxH,
+                  state.wysiwygScrollPx);
 }
 
 RetroUi::ScrollbarHit RetroUi::HitTestScrollbar(int cellCol, int cellRow,

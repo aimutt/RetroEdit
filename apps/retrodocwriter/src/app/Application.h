@@ -152,6 +152,10 @@ private:
     int  ComputeScreenColumns(int cellWidth) const;
     void HandleWindowResized(int newW, int newH);
 
+    // WYSIWYG scrollbar — used by arrow clicks and thumb drag to keep the
+    // cursor on the topmost visible row after the user scrolls.
+    void UpdateCursorToViewportTop();
+
     // Font / window resizing
     void OpenFontDialog();
     void ApplyFontSettings(const FontSettings& settings);

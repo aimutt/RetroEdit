@@ -112,6 +112,14 @@ struct EditorUiState
     // Ctrl+B/I/U). Reflected in the status-bar B/I/U/S indicators. CharStyle
     // bitmask: Bold=0x1, Italic=0x2, Underline=0x4, Strikethrough=0x8.
     uint8_t     currentStyle       = 0;
+
+    // WYSIWYG document scrollbar — pixel quantities (the scrollbar
+    // primitive's math is unit-agnostic so passing px for totalItems /
+    // visibleItems / scrollTop produces a correctly proportioned thumb).
+    // Zero values disable thumb drawing (no scrolling possible).
+    int wysiwygScrollPx     = 0;
+    int wysiwygTotalDocPx   = 0;
+    int wysiwygEditorPxH    = 0;
 };
 
 class RetroUi
@@ -275,4 +283,12 @@ private:
     // call shape.
     void DrawScrollbar(ScreenBuffer& buffer, int x, int y, int height,
                        int totalItems, int visibleItems, int scrollTop);
+
+    // WYSIWYG document scrollbar — drawn in the rightmost chrome column
+    // over the editor row range. Reads state.wysiwyg* (totalDocPx,
+    // editorPxH, scrollPx) and dispatches to the reusable DrawScrollbar.
+    // Called from RetroUi::Draw between the chrome cells and any modal
+    // overlays. Application narrows editorAreaPxW by one cell so the
+    // proportional WysiwygRenderer never paints over this column.
+    void DrawWysiwygScrollbar(ScreenBuffer& buffer, const EditorUiState& state);
 };
