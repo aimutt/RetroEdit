@@ -164,106 +164,20 @@ void RetroUi::DrawTitleBar(ScreenBuffer& buffer, const std::string& filename, bo
 // Editor area
 // ---------------------------------------------------------------------------
 
-void RetroUi::DrawEditorArea(ScreenBuffer& buffer, const TextBuffer& textBuffer,
-                              int viewportTop, const Cursor& cursor,
-                              const EditorUiState& state)
+void RetroUi::DrawEditorArea(ScreenBuffer& buffer, const TextBuffer& /*textBuffer*/,
+                              int /*viewportTop*/, const Cursor& /*cursor*/,
+                              const EditorUiState& /*state*/)
 {
-    Selection sel;
-    sel.active    = state.selActive;
-    sel.anchorRow = state.selAnchorRow;
-    sel.anchorCol = state.selAnchorCol;
-
-    auto inMisspelled = [&state](int row, int col) {
-        if (!state.highlightMisspelled) return false;
-        for (const auto& s : state.misspelledSpans)
-            if (s.row == row && col >= s.col && col < s.col + s.len)
-                return true;
-        return false;
-    };
-
-    if (!state.wordWrap)
-    {
-        // Single buffer row per screen row, with horizontal scroll.
-        for (int screenRow = m_layout.ROW_EDITOR_FIRST;
-             screenRow <= m_layout.ROW_EDITOR_LAST; ++screenRow)
-        {
-            int bufLine = viewportTop + (screenRow - m_layout.ROW_EDITOR_FIRST);
-            if (bufLine < 0 || bufLine >= textBuffer.LineCount())
-                continue;
-
-            const std::string& lineStr = textBuffer.Line(bufLine);
-            int lineLen = static_cast<int>(lineStr.size());
-
-            for (int screenCol = 0; screenCol < buffer.Columns(); ++screenCol)
-            {
-                int bufCol = screenCol + state.viewportLeft;
-
-                char32_t ch = (bufCol >= 0 && bufCol < lineLen)
-                              ? static_cast<char32_t>(static_cast<unsigned char>(lineStr[bufCol]))
-                              : U' ';
-
-                bool selected = sel.ContainsCell(bufCol, bufLine,
-                                                 cursor.row, cursor.column);
-
-                Color fg = selected ? m_theme.reverseForeground : m_theme.normalText;
-                Color bg = selected ? m_theme.reverseBackground : m_theme.background;
-
-                if (!selected && bufCol >= 0 && bufCol < lineLen
-                    && inMisspelled(bufLine, bufCol))
-                    fg = m_theme.misspelledText;
-
-                buffer.PutChar(screenCol, screenRow, ch, fg, bg);
-            }
-        }
-        return;
-    }
-
-    // Word-wrap: each buffer row may span several display rows; segments
-    // break on the last whitespace that fits, falling back to a hard cut for
-    // a word longer than the screen width.
-    const int width      = buffer.Columns();
-    int       screenRow  = m_layout.ROW_EDITOR_FIRST;
-    int       bufLine    = viewportTop;
-
-    while (screenRow <= m_layout.ROW_EDITOR_LAST && bufLine < textBuffer.LineCount())
-    {
-        const std::string& lineStr = textBuffer.Line(bufLine);
-        const int lineLen          = static_cast<int>(lineStr.size());
-        std::vector<int> starts    = ComputeWrapStarts(lineStr, width);
-
-        for (int seg = 0;
-             seg < static_cast<int>(starts.size()) && screenRow <= m_layout.ROW_EDITOR_LAST;
-             ++seg, ++screenRow)
-        {
-            int segStart = starts[seg];
-            int segEnd   = (seg + 1 < static_cast<int>(starts.size()))
-                           ? starts[seg + 1]
-                           : lineLen;
-
-            for (int screenCol = 0; screenCol < width; ++screenCol)
-            {
-                int  bufCol    = segStart + screenCol;
-                bool inSegment = (bufCol < segEnd);
-
-                char32_t ch = inSegment
-                              ? static_cast<char32_t>(static_cast<unsigned char>(lineStr[bufCol]))
-                              : U' ';
-
-                bool selected = inSegment
-                                && sel.ContainsCell(bufCol, bufLine,
-                                                    cursor.row, cursor.column);
-
-                Color fg = selected ? m_theme.reverseForeground : m_theme.normalText;
-                Color bg = selected ? m_theme.reverseBackground : m_theme.background;
-
-                if (inSegment && !selected && inMisspelled(bufLine, bufCol))
-                    fg = m_theme.misspelledText;
-
-                buffer.PutChar(screenCol, screenRow, ch, fg, bg);
-            }
-        }
-        ++bufLine;
-    }
+    // Editor text is no longer drawn into the chrome ScreenBuffer — it has
+    // its own renderer (EditorRenderer) painting at the document font's
+    // cell size, layered between the chrome paint and SDL_RenderPresent in
+    // Application::Render. Here we just fill the editor region with blank
+    // background cells. Dialog overlays that draw into this region of the
+    // ScreenBuffer still appear on top, since Application::Render skips
+    // the editor pass when a prompt mode is active.
+    for (int row = m_layout.ROW_EDITOR_FIRST; row <= m_layout.ROW_EDITOR_LAST; ++row)
+        for (int col = 0; col < buffer.Columns(); ++col)
+            buffer.PutChar(col, row, U' ', m_theme.normalText, m_theme.background);
 }
 
 // ---------------------------------------------------------------------------

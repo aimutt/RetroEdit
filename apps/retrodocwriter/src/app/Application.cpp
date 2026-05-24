@@ -40,8 +40,12 @@ Application::Application()
         return;
     }
 
-    // Default font: Cascadia Mono Medium — clean, professional, legible.
-    m_fontSettings = FontSettings{ FontFace::CascadiaMono, FontSize::Medium };
+    // Chrome (menus / status bar / dialogs) is fixed at Cascadia Mono
+    // Medium so the cell-grid layout never shifts based on document font
+    // choice. Document font (proportional, used by WysiwygRenderer) is
+    // independent — see Options > Font.
+    m_chromeFontSettings   = FontSettings{ FontFace::CascadiaMono, FontSize::Medium };
+    m_documentFontSettings = FontSettings{ FontFace::EBGaramond,   FontSize::Small  };
 
     m_windowWidth  = DEFAULT_WINDOW_WIDTH;
     m_windowHeight = DEFAULT_WINDOW_HEIGHT;
@@ -54,7 +58,7 @@ Application::Application()
     // Pick up the actual window size in case the OS clamped or scaled it.
     SDL_GetWindowSize(m_window->GetWindow(), &m_windowWidth, &m_windowHeight);
 
-    m_renderer = std::make_unique<RetroRenderer>(m_window->GetRenderer(), m_fontSettings);
+    m_renderer = std::make_unique<RetroRenderer>(m_window->GetRenderer(), m_chromeFontSettings);
     m_wysiwyg  = std::make_unique<WysiwygRenderer>(m_window->GetRenderer(), m_theme);
 
     m_screenColumns = ComputeScreenColumns(m_renderer->CellWidth());
@@ -142,7 +146,7 @@ void Application::OpenFile(const std::string& path)
         // otherwise we'd snap back to whatever the global FontSettings
         // happen to be. ApplyFontSettings rebuilds the renderer, so we
         // only call it when something actually changed.
-        FontSettings desired = m_fontSettings;
+        FontSettings desired = m_documentFontSettings;
         int loadedPt = m_document->LoadedPointSize();
         if (loadedPt > 0)
         {
@@ -157,7 +161,7 @@ void Application::OpenFile(const std::string& path)
         {
             desired.face = mappedFace;
         }
-        if (!(desired == m_fontSettings))
+        if (!(desired == m_documentFontSettings))
             ApplyFontSettings(desired);
 
         m_statusMessage = "Ready";
@@ -1555,8 +1559,8 @@ void Application::UpdateSelection(bool shift)
 int Application::NavigationWrapWidth() const
 {
     return WysiwygRenderer::ComputeCharsPerLine(
-        m_fontSettings.face,
-        FontSizePoints(m_fontSettings.size),
+        m_documentFontSettings.face,
+        FontSizePoints(m_documentFontSettings.size),
         m_margins.leftIn, m_margins.rightIn);
 }
 
@@ -2010,8 +2014,8 @@ void Application::CommitPrompt()
         if (!m_promptText.empty())
         {
             if (m_document->SaveAs(m_promptText,
-                                   m_fontSettings.face,
-                                   FontSizePoints(m_fontSettings.size),
+                                   m_documentFontSettings.face,
+                                   FontSizePoints(m_documentFontSettings.size),
                                    CurrentRtfPage()))
             {
                 WriteSidecarForCurrentDocument();
@@ -2117,8 +2121,8 @@ bool Application::SaveDocument()
         m_statusMessage.clear();
         return false;
     }
-    if (m_document->Save(m_fontSettings.face,
-                         FontSizePoints(m_fontSettings.size),
+    if (m_document->Save(m_documentFontSettings.face,
+                         FontSizePoints(m_documentFontSettings.size),
                          CurrentRtfPage()))
     {
         WriteSidecarForCurrentDocument();
@@ -2378,9 +2382,9 @@ void Application::OpenFontDialog()
     //      after pinning a face/size reflects what's actually selected).
     //   2. m_currentFace / m_currentSize (the next-typed face/size set
     //      by a previous no-selection dialog commit).
-    //   3. Document default (m_fontSettings) when neither is set.
-    FontFace seedFace = m_fontSettings.face;
-    FontSize seedSize = m_fontSettings.size;
+    //   3. Document default (m_documentFontSettings) when neither is set.
+    FontFace seedFace = m_documentFontSettings.face;
+    FontSize seedSize = m_documentFontSettings.size;
     if (m_currentFace != CharFormat::Inherit
         && m_currentFace < static_cast<uint8_t>(FontFace::Count_))
         seedFace = static_cast<FontFace>(m_currentFace);
@@ -2443,7 +2447,7 @@ void Application::ApplyFontDialogSelection()
         int lastRow = tb.LineCount() - 1;
         bool selCoversAll = (sr == 0 && sc == 0 && er == lastRow
                              && ec == static_cast<int>(tb.LineLength(lastRow)));
-        if (selCoversAll && !(FontSettings{ face, size } == m_fontSettings))
+        if (selCoversAll && !(FontSettings{ face, size } == m_documentFontSettings))
             ApplyFontSettings(FontSettings{ face, size });
 
         m_statusMessage = "Font applied to selection";
@@ -2452,7 +2456,7 @@ void Application::ApplyFontDialogSelection()
 
     // No selection — the picked face/size affects only next-typed input
     // (via the m_currentFace / m_currentSize fields set above). The
-    // document default (m_fontSettings) is left untouched so existing
+    // document default (m_documentFontSettings) is left untouched so existing
     // Inherit-face/size characters are not retroactively restyled. To
     // restyle every character in the document, the user can press
     // Ctrl+A (Select All) before opening the Font dialog.
@@ -2593,8 +2597,8 @@ void Application::ResolveConfirmYes()
                 m_exitAfterSave = true;
                 StartSaveAsPrompt();
             }
-            else if (m_document->Save(m_fontSettings.face,
-                                      FontSizePoints(m_fontSettings.size),
+            else if (m_document->Save(m_documentFontSettings.face,
+                                      FontSizePoints(m_documentFontSettings.size),
                                       CurrentRtfPage()))
             {
                 WriteSidecarForCurrentDocument();
@@ -2656,8 +2660,8 @@ void Application::ResolveConfirmNo()
             // user accepted the warning; flatten the in-memory styles so
             // the next save round-trips correctly.
             m_document->Buffer().FlattenAllStyles();
-            if (m_document->Save(m_fontSettings.face,
-                                 FontSizePoints(m_fontSettings.size),
+            if (m_document->Save(m_documentFontSettings.face,
+                                 FontSizePoints(m_documentFontSettings.size),
                                  CurrentRtfPage()))
             {
                 WriteSidecarForCurrentDocument();
@@ -2966,10 +2970,10 @@ void Application::ClosePrintDialog(bool commit)
     // system-wide. The formatted print path uses pixel-based wrap with
     // per-char advance — exactly mirrors the screen renderer.
     m_printRequest.useDocumentFont = true;
-    m_printRequest.fontFamily      = FontFaceFamily(m_fontSettings.face);
-    m_printRequest.fontFile        = ResolveAssetPath(FontFaceFile(m_fontSettings.face));
-    m_printRequest.pointSize       = FontSizePoints(m_fontSettings.size);
-    m_printRequest.bold            = FontFaceIsBold(m_fontSettings.face);
+    m_printRequest.fontFamily      = FontFaceFamily(m_documentFontSettings.face);
+    m_printRequest.fontFile        = ResolveAssetPath(FontFaceFile(m_documentFontSettings.face));
+    m_printRequest.pointSize       = FontSizePoints(m_documentFontSettings.size);
+    m_printRequest.bold            = FontFaceIsBold(m_documentFontSettings.face);
     m_printRequest.formats         = &m_document->Buffer().Formats();
     m_printRequest.pageBreakBefore = &m_document->Buffer().PageBreaks();
 
@@ -3268,31 +3272,15 @@ void Application::HandleWindowResized(int newW, int newH)
 
 void Application::ApplyFontSettings(const FontSettings& settings)
 {
-    m_fontSettings = settings;
-    // The cell-grid chrome (menus, status bar, dialogs) renders into
-    // ScreenBuffer cells of fixed width, so it must use a monospace face.
-    // The document itself can be a proportional face — WysiwygRenderer
-    // handles that with per-glyph advance — but RetroRenderer cannot.
-    // When the document's default face is proportional, fall the chrome
-    // back to the canonical monospace face at the same size so menus and
-    // dialogs still render cleanly.
-    FontSettings chromeSettings = settings;
-    if (!FontFaceIsMonospace(chromeSettings.face))
-        chromeSettings.face = FontFace::CascadiaMono;
-    m_renderer->SetFontSettings(chromeSettings);
-    // WysiwygRenderer rebuilds its glyph cache lazily inside Draw() when the
-    // (face, point size, dpi) tuple changes — no explicit notification needed.
+    // Document font only — chrome stays at m_chromeFontSettings forever, so
+    // menus / status bar / dialogs do not resize when the user picks a new
+    // document font. WysiwygRenderer rebuilds its own glyph cache lazily
+    // inside Draw() when the (face, point size, dpi) tuple changes, so no
+    // explicit notification is needed here.
+    m_documentFontSettings = settings;
 
-    // Window stays at WINDOW_WIDTH x WINDOW_HEIGHT — cell size changes, so
-    // the column/row count of the screen buffer is what shifts.
-    m_screenColumns = ComputeScreenColumns(m_renderer->CellWidth());
-    int rows        = ComputeScreenRows(m_renderer->CellHeight());
-    m_layout        = Layout(rows);
-
-    m_screenBuffer = std::make_unique<ScreenBuffer>(m_screenColumns, rows);
-    m_ui           = std::make_unique<RetroUi>(m_theme, m_layout);
-
-    // Keep cursor visible after a layout change.
+    // Cursor pixel position depends on document cell metrics, so re-clamp
+    // to keep the cursor visible after the document font changes.
     ClampCursorToLine();
     ScrollViewport();
 }
@@ -3441,9 +3429,24 @@ void Application::Render()
     uiState.showFontDialog        = (m_promptMode == PromptMode::FontDialog);
     uiState.fontDialogPresetIdx   = m_fontDialogPresetIdx;
     uiState.fontDialogScrollTop   = m_fontDialogScrollTop;
-    uiState.fontDialogActivePreset =
-        static_cast<int>(m_fontSettings.face) * FontSizeCount()
-        + IndexOfFontSize(m_fontSettings.size);
+    // "Active" preset = the effective next-typed font. When the user picks
+    // a face/size from the Font dialog without a selection, only
+    // m_currentFace / m_currentSize are updated; m_documentFontSettings
+    // stays put. The "*" indicator should still move to that pick — it
+    // represents "what your next character will look like," which is also
+    // what OpenFontDialog seeds the focused row from.
+    {
+        FontFace activeFace = m_documentFontSettings.face;
+        FontSize activeSize = m_documentFontSettings.size;
+        if (m_currentFace != CharFormat::Inherit
+            && m_currentFace < static_cast<uint8_t>(FontFace::Count_))
+            activeFace = static_cast<FontFace>(m_currentFace);
+        if (m_currentSize != CharFormat::Inherit && m_currentSize < 4)
+            activeSize = FontSizeAt(static_cast<int>(m_currentSize));
+        uiState.fontDialogActivePreset =
+            static_cast<int>(activeFace) * FontSizeCount()
+            + IndexOfFontSize(activeSize);
+    }
 
     uiState.themeDialogActive    = (m_promptMode == PromptMode::ThemeDialog);
     uiState.themeDialogFocusIdx  = m_themeDialogFocusIdx;
@@ -3583,8 +3586,19 @@ WysiwygRenderer::DrawContext Application::BuildWysiwygDrawContext() const
     ctx.editorAreaPxH  = (m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1) * ch;
     ctx.screenDpi      = dpi;
     ctx.viewportTopPx  = m_wysiwygScrollPx;
-    ctx.face           = m_fontSettings.face;
-    ctx.pointSize      = FontSizePoints(m_fontSettings.size);
+    ctx.face           = m_documentFontSettings.face;
+    ctx.pointSize      = FontSizePoints(m_documentFontSettings.size);
+
+    // Insert font: what the next-typed character will look like. Used by the
+    // renderer to size the cursor on empty lines so picking a smaller font
+    // shrinks the cursor immediately, before the user types anything.
+    ctx.insertFace      = ctx.face;
+    ctx.insertPointSize = ctx.pointSize;
+    if (m_currentFace != CharFormat::Inherit
+        && m_currentFace < static_cast<uint8_t>(FontFace::Count_))
+        ctx.insertFace = static_cast<FontFace>(m_currentFace);
+    if (m_currentSize != CharFormat::Inherit && m_currentSize < 4)
+        ctx.insertPointSize = FontSizePoints(FontSizeAt(static_cast<int>(m_currentSize)));
     return ctx;
 }
 

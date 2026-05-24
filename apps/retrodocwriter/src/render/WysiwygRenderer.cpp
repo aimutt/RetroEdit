@@ -737,7 +737,19 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
                     if (cx + static_cast<int>(advNext + 0.5) > margin)
                         cx = margin - 2;
                 }
-                FillRect(m_sdl, cx, textY, 2, h, m_theme.brightText);
+                // On an empty line, the segment's height is the document
+                // default's LineHeight. Override with the "insert" font so
+                // the cursor previews the size of the next-typed char —
+                // otherwise picking a smaller font after writing in a
+                // larger one leaves the cursor at the larger height.
+                int cursorPxH = h;
+                if (chars.empty()
+                    && (ctx.insertFace != ctx.face || ctx.insertPointSize != ctx.pointSize))
+                {
+                    GlyphCache* insertCache = CacheFor(ctx.insertFace, ctx.insertPointSize, dpi);
+                    if (insertCache) cursorPxH = insertCache->LineHeight();
+                }
+                FillRect(m_sdl, cx, textY, 2, cursorPxH, m_theme.brightText);
             }
 
             yInPage += h;

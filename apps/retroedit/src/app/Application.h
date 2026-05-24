@@ -4,6 +4,7 @@
 #include "render/FontSettings.h"
 #include "render/ScreenBuffer.h"
 #include "render/RetroRenderer.h"
+#include "render/EditorRenderer.h"
 #include "render/Theme.h"
 #include "ui/Layout.h"
 #include "ui/MenuDefs.h"
@@ -147,6 +148,16 @@ private:
     int  ComputeScreenColumns(int cellWidth) const;
     void HandleWindowResized(int newW, int newH);
 
+    // Editor body metrics. The chrome ScreenBuffer is dimensioned in chrome
+    // cells (m_screenColumns × Layout rows). The editor body uses its own
+    // font/cell size — these helpers convert the editor's pixel rect into
+    // editor-cell columns/rows. Used by viewport scroll math, word-wrap
+    // width, mouse hit-testing inside the editor region, and the cursor
+    // navigation helpers.
+    int     EditorColumns() const;
+    int     EditorRows()    const;
+    SDL_Rect EditorPixelRect() const;
+
     // Font / window resizing
     void OpenFontDialog();
     void ApplyFontSettings(const FontSettings& settings);
@@ -219,9 +230,16 @@ private:
     int        m_activeMenu          = -1;
     int        m_activeItem          = -1;
 
-    // Font picker. Flat preset list — see EditorUiState comment in
-    // RetroUi.h for the (face_idx * FontSizeCount() + size_idx) encoding.
-    FontSettings m_fontSettings;
+    // Two separate font settings — chrome (menu/status bar/dialogs, drawn
+    // via the cell-grid RetroRenderer) and document (editor body, drawn via
+    // the new EditorRenderer). Options > Font targets the document only;
+    // the chrome font is fixed at startup so menus and dialog text never
+    // resize when the user picks a different editor font.
+    //
+    // Flat preset list encoding (face_idx * FontSizeCount() + size_idx) —
+    // see EditorUiState comment in RetroUi.h.
+    FontSettings m_chromeFontSettings;    // RetroRenderer (chrome cell grid)
+    FontSettings m_documentFontSettings;  // EditorRenderer (editor body)
     int          m_fontDialogPresetIdx = 0;
     int          m_fontDialogScrollTop = 0;
 
@@ -276,7 +294,8 @@ private:
     Theme                           m_theme;
     std::unique_ptr<Window>         m_window;
     std::unique_ptr<ScreenBuffer>   m_screenBuffer;
-    std::unique_ptr<RetroRenderer>  m_renderer;
+    std::unique_ptr<RetroRenderer>  m_renderer;       // chrome cell grid
+    std::unique_ptr<EditorRenderer> m_editorRenderer; // document body
     std::unique_ptr<RetroUi>        m_ui;
     std::unique_ptr<FileDocument>   m_document;
     Cursor                          m_cursor;

@@ -60,6 +60,15 @@ public:
         // same point size, scaled to the printer's DPI).
         FontFace face       = FontFace::CascadiaMono;
         int      pointSize  = 16;
+
+        // "Insert" font — the face/size of the next character that would be
+        // typed at the cursor. When the user picks a font from the Font
+        // dialog without a selection, the document default is left alone
+        // but next-typed chars get this face/size; the cursor on an empty
+        // line should preview that height instead of the default's, so
+        // moving from a 24pt paragraph to a 12pt one shrinks the cursor.
+        FontFace insertFace      = FontFace::CascadiaMono;
+        int      insertPointSize = 16;
     };
 
     void Draw(const DrawContext& ctx);
