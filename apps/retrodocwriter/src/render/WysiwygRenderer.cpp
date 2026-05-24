@@ -505,6 +505,69 @@ int WysiwygRenderer::ClampScrollForCursor(const DrawContext& ctx)
 }
 
 // ---------------------------------------------------------------------------
+// RowAtViewportTop — used by the WYSIWYG scrollbar's "cursor follows scroll"
+// behavior. Walks the same pagination as ClampScrollForCursor / Draw and
+// returns the first buffer row whose document-space top is >= viewportTopPx
+// (i.e., the topmost row that is visible at or below the viewport's top).
+// ---------------------------------------------------------------------------
+
+int WysiwygRenderer::RowAtViewportTop(const DrawContext& ctx, int viewportTopPx)
+{
+    if (!ctx.buffer || ctx.buffer->LineCount() == 0) return 0;
+    const int dpi = std::max(48, ctx.screenDpi);
+
+    LayoutPass pass;
+    const int pageH    = static_cast<int>(kPaperHeightIn * dpi);
+    const int mTop     = static_cast<int>(ctx.margins.topIn    * dpi);
+    const int mBottom  = static_cast<int>(ctx.margins.bottomIn * dpi);
+    const int mLeft    = static_cast<int>(ctx.margins.leftIn   * dpi);
+    const int mRight   = static_cast<int>(ctx.margins.rightIn  * dpi);
+    const int pageW    = static_cast<int>(kPaperWidthIn  * dpi);
+    const int usableW  = std::max(1, pageW - mLeft - mRight);
+    const int usableH  = std::max(1, pageH - mTop  - mBottom);
+    const int pageStride = pageH + kPageGapPx;
+
+    BuildLayoutPass(pass, *ctx.buffer, ctx.formatted,
+                    ctx.face, ctx.pointSize, m_theme.normalText, usableW,
+                    [&](FontFace f, int p) { return CacheFor(f, p, dpi); },
+                    [&](FontFace f, int p, unsigned int cp) {
+                        int px = std::max(1, (p * dpi + 36) / 72);
+                        return SubpxAdvance(f, px, cp);
+                    });
+
+    int curPage = 0;
+    int yInPage = 0;
+    int lastRow = ctx.buffer->LineCount() - 1;
+
+    for (int li = 0; li <= lastRow; ++li)
+    {
+        if (li > 0 && ctx.formatted && ctx.formatted->PageBreakBefore(li))
+        {
+            ++curPage;
+            yInPage = 0;
+        }
+        const auto& segs = pass.segments[li];
+        // A buffer row's "top" is the Y of its first segment.
+        bool firstSegOnLine = true;
+        for (const auto& seg : segs)
+        {
+            int h = seg.height;
+            if (yInPage + h > usableH)
+            {
+                ++curPage;
+                yInPage = 0;
+            }
+            int absY = curPage * pageStride + mTop + yInPage;
+            if (firstSegOnLine && absY >= viewportTopPx)
+                return li;
+            firstSegOnLine = false;
+            yInPage += h;
+        }
+    }
+    return lastRow;
+}
+
+// ---------------------------------------------------------------------------
 // Draw
 // ---------------------------------------------------------------------------
 
@@ -575,6 +638,11 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
             }
         }
     }
+
+    // Cache the layout metrics so the editor's WYSIWYG scrollbar can size
+    // its thumb and step the viewport without re-running the layout pass.
+    m_lastTotalDocumentPx  = totalPages * pageStride;
+    m_lastDefaultLineHeight = pass.defaultLineHeight;
 
     Color paper = m_theme.background;
     paper.r = static_cast<uint8_t>(std::min(255, paper.r + 18));

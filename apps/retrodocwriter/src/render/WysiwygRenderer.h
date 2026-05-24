@@ -118,6 +118,20 @@ public:
     static int ComputeCharsPerLine(FontFace face, int ptSize,
                                     double leftMarginIn, double rightMarginIn);
 
+    // Cached metrics from the most recent `Draw` call. Used by the editor's
+    // mouse scrollbar so the thumb size, arrow step, and viewport-row lookup
+    // don't need to re-run a layout pass every frame. Zero until the first
+    // `Draw` runs — callers can treat zero as "no scrolling possible yet".
+    int LastTotalDocumentPx()  const { return m_lastTotalDocumentPx; }
+    int LastDefaultLineHeight() const { return m_lastDefaultLineHeight; }
+
+    // Walks the layout pass for `ctx` and returns the first buffer row whose
+    // top in document pixel coordinates is >= `viewportTopPx`, or the last
+    // row if the viewport is past the document end. Used by the WYSIWYG
+    // scrollbar's "cursor follows scroll" behavior: after the user moves
+    // the scrollbar, the cursor jumps to the row this returns.
+    int RowAtViewportTop(const DrawContext& ctx, int viewportTopPx);
+
 private:
     // Resolve and return the cache for a (face, pointSize) combo at the
     // current dpi, creating it on demand. Caches are kept in m_caches
@@ -149,5 +163,7 @@ private:
     SDL_Renderer* m_sdl    = nullptr;
     const Theme&  m_theme;
     std::unordered_map<uint32_t, std::unique_ptr<GlyphCache>> m_caches;
-    int      m_lastDpi  = 0;
+    int      m_lastDpi              = 0;
+    int      m_lastTotalDocumentPx  = 0;  // set at end of Draw()
+    int      m_lastDefaultLineHeight = 0; // set at end of Draw()
 };

@@ -1417,6 +1417,62 @@ void Application::HandleMouseDown(int cellCol, int cellRow, Uint8 button)
         CloseMenu();
         m_needsRedraw = true;
     }
+
+    // WYSIWYG document scrollbar — rightmost chrome column over the editor
+    // row range. Only active when there are no modal overlays.
+    if (m_promptMode == PromptMode::None && m_wysiwyg)
+    {
+        const int scrollbarX = m_screenColumns - 1;
+        const int scrollbarY = m_layout.ROW_EDITOR_FIRST;
+        const int height     = m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1;
+        if (cellCol == scrollbarX
+            && cellRow >= scrollbarY && cellRow < scrollbarY + height)
+        {
+            const int totalDocPx = m_wysiwyg->LastTotalDocumentPx();
+            int ch = m_renderer ? m_renderer->CellHeight() : 0;
+            const int editorPxH = (m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1) * ch;
+            const int maxScroll = std::max(0, totalDocPx - editorPxH);
+            int lineH = m_wysiwyg->LastDefaultLineHeight();
+            if (lineH <= 0) lineH = (ch > 0) ? ch : 16;
+
+            auto hit = m_ui->HitTestScrollbar(cellCol, cellRow,
+                                              scrollbarX, scrollbarY, height,
+                                              totalDocPx, editorPxH, m_wysiwygScrollPx);
+            switch (hit.region)
+            {
+                case RetroUi::ScrollbarHit::Region::UpButton:
+                    m_wysiwygScrollPx = std::max(0, m_wysiwygScrollPx - lineH);
+                    UpdateCursorToViewportTop();
+                    m_needsRedraw = true;
+                    break;
+                case RetroUi::ScrollbarHit::Region::DownButton:
+                    m_wysiwygScrollPx = std::min(maxScroll, m_wysiwygScrollPx + lineH);
+                    UpdateCursorToViewportTop();
+                    m_needsRedraw = true;
+                    break;
+                case RetroUi::ScrollbarHit::Region::Thumb:
+                    m_scrollbarDragActive       = true;
+                    // PromptMode::None doubles as the "WYSIWYG editor"
+                    // owner — the existing safety check in
+                    // HandleMouseMotion correctly cancels the drag if a
+                    // dialog opens mid-drag (None != non-None).
+                    m_scrollbarDragOwner        = PromptMode::None;
+                    m_scrollbarDragX            = scrollbarX;
+                    m_scrollbarDragY            = scrollbarY;
+                    m_scrollbarDragHeight       = height;
+                    m_scrollbarDragTotalItems   = totalDocPx;
+                    m_scrollbarDragVisibleItems = editorPxH;
+                    m_scrollbarDragGrabOffset   = hit.grabOffsetInThumb;
+                    break;
+                case RetroUi::ScrollbarHit::Region::TrackAbove:
+                case RetroUi::ScrollbarHit::Region::TrackBelow:
+                    // Page-jump on track click is a future enhancement.
+                    break;
+                case RetroUi::ScrollbarHit::Region::None:
+                    break;
+            }
+        }
+    }
 }
 
 void Application::HandleMouseUp(int /*cellCol*/, int /*cellRow*/, Uint8 button)
@@ -1455,6 +1511,16 @@ void Application::HandleMouseMotion(int cellCol, int cellRow)
                 {
                     m_fontDialogScrollTop = newScrollTop;
                     m_needsRedraw         = true;
+                }
+                break;
+            case PromptMode::None:
+                // WYSIWYG document scrollbar drag — cursor follows the
+                // viewport top on every motion frame.
+                if (newScrollTop != m_wysiwygScrollPx)
+                {
+                    m_wysiwygScrollPx = newScrollTop;
+                    UpdateCursorToViewportTop();
+                    m_needsRedraw     = true;
                 }
                 break;
             default:
@@ -2362,6 +2428,26 @@ int Application::DisplayRowsForLine(int bufRow) const
 {
     if (bufRow < 0 || bufRow >= m_document->Buffer().LineCount()) return 1;
     return CountWrapRows(m_document->Buffer().Line(bufRow), m_screenColumns);
+}
+
+void Application::UpdateCursorToViewportTop()
+{
+    // Move the cursor to the first buffer row visible at the new viewport
+    // top after a scrollbar action. Collapses any active selection.
+    if (!m_wysiwyg || !m_document) return;
+    WysiwygRenderer::DrawContext ctx = BuildWysiwygDrawContext();
+    ctx.viewportTopPx = m_wysiwygScrollPx;
+    int newRow = m_wysiwyg->RowAtViewportTop(ctx, m_wysiwygScrollPx);
+    int lineCount = m_document->Buffer().Text().LineCount();
+    if (lineCount > 0)
+    {
+        newRow = std::clamp(newRow, 0, lineCount - 1);
+        m_cursor.row    = newRow;
+        m_cursor.column = std::min(m_cursor.column,
+                                   m_document->Buffer().Text().LineLength(newRow));
+    }
+    m_selection.active = false;
+    ClampCursorToLine();
 }
 
 void Application::ScrollViewport()
@@ -3572,6 +3658,18 @@ void Application::Render()
         }
     }
 
+    // Populate the WYSIWYG scrollbar state from the previous frame's
+    // computed layout. The values lag the live state by one frame (the
+    // current frame's ClampScrollForCursor / WysiwygRenderer::Draw run
+    // after RetroUi::Draw below), but the lag is imperceptible at 60 fps.
+    uiState.wysiwygScrollPx   = m_wysiwygScrollPx;
+    uiState.wysiwygTotalDocPx = m_wysiwyg ? m_wysiwyg->LastTotalDocumentPx() : 0;
+    {
+        int ch = m_renderer ? m_renderer->CellHeight() : 0;
+        uiState.wysiwygEditorPxH =
+            (m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1) * ch;
+    }
+
     m_ui->Draw(*m_screenBuffer, m_cursor, uiState);
 
     if (m_promptMode == PromptMode::None)
@@ -3628,7 +3726,10 @@ WysiwygRenderer::DrawContext Application::BuildWysiwygDrawContext() const
     ctx.margins        = m_margins;
     ctx.editorAreaPxX  = 0;
     ctx.editorAreaPxY  = m_layout.ROW_EDITOR_FIRST * ch;
-    ctx.editorAreaPxW  = m_screenColumns * cw;
+    // Rightmost chrome column is reserved for the WYSIWYG scrollbar drawn
+    // by RetroUi — narrow the proportional renderer's paint rect so it
+    // doesn't overdraw that column.
+    ctx.editorAreaPxW  = std::max(0, m_screenColumns - 1) * cw;
     ctx.editorAreaPxH  = (m_layout.ROW_EDITOR_LAST - m_layout.ROW_EDITOR_FIRST + 1) * ch;
     ctx.screenDpi      = dpi;
     ctx.viewportTopPx  = m_wysiwygScrollPx;
