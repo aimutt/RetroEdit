@@ -1395,7 +1395,8 @@ void Application::HandleMouseDown(int cellCol, int cellRow, Uint8 button)
         int item = m_ui->HitTestDropdownItem(
             m_activeMenu, cellCol, cellRow, m_screenColumns,
             m_wordWrap, m_showWordCount,
-            m_spellCheckEnabled, m_highlightMisspelled);
+            m_spellCheckEnabled, m_highlightMisspelled,
+            m_showMargins);
         if (item >= 0)
         {
             // ExecuteMenuItem already filters separators (empty label).
@@ -1554,7 +1555,8 @@ void Application::HandleMouseMotion(int cellCol, int cellRow)
         int item = m_ui->HitTestDropdownItem(
             m_activeMenu, cellCol, cellRow, m_screenColumns,
             m_wordWrap, m_showWordCount,
-            m_spellCheckEnabled, m_highlightMisspelled);
+            m_spellCheckEnabled, m_highlightMisspelled,
+            m_showMargins);
         if (item >= 0 && item != m_activeItem)
         {
             // Skip separators — keep the previous highlighted item.
@@ -2393,6 +2395,7 @@ void Application::ExecuteMenuItem(int menuIdx, int itemIdx)
                 case 3: OpenWordCountDialog(); break; // Word Count
                 case 4: ToggleSpellCheck(); break;
                 case 5: ToggleHighlightMisspelled(); break;
+                case 6: ToggleShowMargins(); break;
                 default: break;
             }
             break;
@@ -2870,6 +2873,14 @@ void Application::ToggleHighlightMisspelled()
     SaveGlobalSettings();
 }
 
+void Application::ToggleShowMargins()
+{
+    m_showMargins = !m_showMargins;
+    m_statusMessage = m_showMargins ? "Margins shown" : "Margins hidden";
+    m_needsRedraw   = true;
+    SaveGlobalSettings();
+}
+
 void Application::CheckJustCompletedWord()
 {
     // The cursor sits just after the boundary character; the word ended at
@@ -2925,6 +2936,8 @@ void Application::LoadGlobalSettings()
             m_highlightMisspelled = s.GetBool("highlight_misspelled");
         if (s.Has("theme_name"))
             m_themeName = ParseThemeName(s.GetString("theme_name"));
+        if (s.Has("show_margins"))
+            m_showMargins = s.GetBool("show_margins");
     }
     m_theme = MakeTheme(m_themeName);
 
@@ -2941,6 +2954,7 @@ void Application::SaveGlobalSettings()
     s.Load(dir + "config.ini");
     s.SetBool("spell_check",          m_spellCheckEnabled);
     s.SetBool("highlight_misspelled", m_highlightMisspelled);
+    s.SetBool("show_margins",         m_showMargins);
     s.SetString("theme_name",         ThemeNameKey(m_themeName));
     s.Save(dir + "config.ini");
 }
@@ -3603,6 +3617,9 @@ void Application::Render()
     uiState.spellCheckEnabled   = m_spellCheckEnabled;
     uiState.highlightMisspelled = m_highlightMisspelled;
 
+    // WYSIWYG margins toggle (Options > Show Margins).
+    uiState.showMargins         = m_showMargins;
+
     // Print dialog snapshot
     uiState.printDialogActive   = (m_promptMode == PromptMode::PrintDialog);
     uiState.printerList         = m_printerList;
@@ -3741,6 +3758,7 @@ WysiwygRenderer::DrawContext Application::BuildWysiwygDrawContext() const
     // shrinks the cursor immediately, before the user types anything.
     ctx.insertFace      = ctx.face;
     ctx.insertPointSize = ctx.pointSize;
+    ctx.showMargins     = m_showMargins;
     if (m_currentFace != CharFormat::Inherit
         && m_currentFace < static_cast<uint8_t>(FontFace::Count_))
         ctx.insertFace = static_cast<FontFace>(m_currentFace);

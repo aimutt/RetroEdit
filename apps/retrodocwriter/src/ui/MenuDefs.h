@@ -81,6 +81,7 @@ inline const std::vector<MenuDef>& GetMenuDefs()
             { "Word Count",           ""     },   // shortcut column shows On/Off at draw time
             { "Spell Check",          ""     },   // shortcut column shows On/Off at draw time
             { "Highlight Misspelled", ""     },   // shortcut column shows On/Off at draw time
+            { "Show Margins",         ""     },   // shortcut column shows On/Off at draw time
         }},
         { "Help", 58, {
             { "Help",         "F1"   },

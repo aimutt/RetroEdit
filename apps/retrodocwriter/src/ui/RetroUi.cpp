@@ -527,15 +527,17 @@ namespace
     // when "Off" is wider than the (empty) static shortcut.
     std::string LiveShortcut(int menuIdx, int itemIdx, const MenuItemDef& item,
                              bool wordWrap, bool showWordCount,
-                             bool spellCheckEnabled, bool highlightMisspelled)
+                             bool spellCheckEnabled, bool highlightMisspelled,
+                             bool showMargins)
     {
         // Options is menu idx 7 in RetroDocWriter (after Format was inserted at 2).
-        // Options menu (menuIdx 7) after Theme... inserted at item 1:
-        // 0=Font, 1=Theme, 2=WordWrap, 3=WordCount, 4=Spell, 5=Highlight.
+        // Options menu (menuIdx 7):
+        // 0=Font, 1=Theme, 2=WordWrap, 3=WordCount, 4=Spell, 5=Highlight, 6=ShowMargins.
         if (menuIdx == 7 && itemIdx == 2) return wordWrap            ? "On" : "Off";
         if (menuIdx == 7 && itemIdx == 3) return showWordCount       ? "On" : "Off";
         if (menuIdx == 7 && itemIdx == 4) return spellCheckEnabled   ? "On" : "Off";
         if (menuIdx == 7 && itemIdx == 5) return highlightMisspelled ? "On" : "Off";
+        if (menuIdx == 7 && itemIdx == 6) return showMargins         ? "On" : "Off";
         return item.shortcut;
     }
 
@@ -546,6 +548,7 @@ namespace
     DropdownRect ComputeDropdownRect(int menuIdx, int screenColumns,
                                      bool wordWrap, bool showWordCount,
                                      bool spellCheckEnabled, bool highlightMisspelled,
+                                     bool showMargins,
                                      const Layout& layout)
     {
         DropdownRect r{ 0, layout.ROW_SEP_TOP, 0, 0 };
@@ -561,7 +564,8 @@ namespace
             int w = static_cast<int>(item.label.size());
             std::string sc = LiveShortcut(menuIdx, i, item,
                                           wordWrap, showWordCount,
-                                          spellCheckEnabled, highlightMisspelled);
+                                          spellCheckEnabled, highlightMisspelled,
+                                          showMargins);
             if (!sc.empty())
                 w += static_cast<int>(sc.size()) + 2; // two-space gap
             innerWidth = std::max(innerWidth, w);
@@ -592,6 +596,7 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
         menuIdx, buffer.Columns(),
         state.wordWrap, state.showWordCount,
         state.spellCheckEnabled, state.highlightMisspelled,
+        state.showMargins,
         m_layout);
 
     int startCol  = rect.startCol;
@@ -647,7 +652,8 @@ void RetroUi::DrawDropdownMenu(ScreenBuffer& buffer, int menuIdx, int activeItem
             std::string shortcut = LiveShortcut(menuIdx, i, item,
                                                 state.wordWrap, state.showWordCount,
                                                 state.spellCheckEnabled,
-                                                state.highlightMisspelled);
+                                                state.highlightMisspelled,
+                                                state.showMargins);
             if (!shortcut.empty())
             {
                 Color scFg = isHighlighted ? m_theme.reverseForeground : m_theme.dimText;
@@ -687,12 +693,14 @@ int RetroUi::HitTestMenuBar(int cellCol) const
 int RetroUi::HitTestDropdownItem(int menuIdx, int cellCol, int cellRow,
                                  int screenColumns,
                                  bool wordWrap, bool showWordCount,
-                                 bool spellCheckEnabled, bool highlightMisspelled) const
+                                 bool spellCheckEnabled, bool highlightMisspelled,
+                                 bool showMargins) const
 {
     DropdownRect rect = ComputeDropdownRect(
         menuIdx, screenColumns,
         wordWrap, showWordCount,
         spellCheckEnabled, highlightMisspelled,
+        showMargins,
         m_layout);
     if (rect.outerWidth <= 0 || rect.numItems <= 0) return -1;
 

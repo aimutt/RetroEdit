@@ -201,6 +201,7 @@ private:
     void OpenCheckWordDialog();
     void ToggleSpellCheck();
     void ToggleHighlightMisspelled();
+    void ToggleShowMargins();
     void CheckJustCompletedWord();
     void SaveUserDictionary();
 
@@ -335,6 +336,12 @@ private:
     bool         m_spellCheckEnabled    = false;
     bool         m_highlightMisspelled  = false;
     Dictionary   m_dictionary;
+
+    // WYSIWYG-only: show/hide the dim margin guides drawn inside each page
+    // rectangle. Persisted globally as `show_margins` in config.ini; defaults
+    // to true so existing users keep the current look on first launch with
+    // the new toggle.
+    bool         m_showMargins          = true;
 
     // Print dialog state — populated when OpenPrintDialog runs, persists
     // across invocations within the session so the user's last choices stick.

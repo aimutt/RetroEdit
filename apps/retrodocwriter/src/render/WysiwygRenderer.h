@@ -80,6 +80,11 @@ public:
         // glyph-paint stage so selected text doesn't inherit the misspell
         // tint.
         std::vector<MisspelledSpan> misspelledSpans;
+
+        // When true, Draw paints a dim margin-guide rectangle inside each
+        // page. Defaults to true so behavior is unchanged for callers that
+        // don't set it explicitly.
+        bool showMargins = true;
     };
 
     void Draw(const DrawContext& ctx);
