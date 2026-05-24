@@ -185,11 +185,27 @@ void Application::DispatchEvent(const SDL_Event& event)
             // actually changes — clicks that hit nothing don't force repaints.
             break;
         }
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+        {
+            int cw = m_renderer ? m_renderer->CellWidth()  : 0;
+            int ch = m_renderer ? m_renderer->CellHeight() : 0;
+            if (cw > 0 && ch > 0)
+            {
+                HandleMouseUp(static_cast<int>(event.button.x) / cw,
+                              static_cast<int>(event.button.y) / ch,
+                              event.button.button);
+            }
+            break;
+        }
         case SDL_EVENT_MOUSE_MOTION:
         {
-            // Only routed when a menu is active — keeps the no-menu hot path
-            // free of any per-motion work.
-            if (m_promptMode == PromptMode::MenuBar || m_promptMode == PromptMode::MenuOpen)
+            // Routed when a menu is active or a scrollbar thumb is being
+            // dragged — keeps the no-menu hot path free of per-motion work.
+            const bool needMotion =
+                m_promptMode == PromptMode::MenuBar
+             || m_promptMode == PromptMode::MenuOpen
+             || m_scrollbarDragActive;
+            if (needMotion)
             {
                 int cw = m_renderer ? m_renderer->CellWidth()  : 0;
                 int ch = m_renderer ? m_renderer->CellHeight() : 0;
@@ -241,37 +257,45 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
         return;
     }
 
-    // Font picker — two-column navigation (Face | Size).
+    // Font picker — single-column flat preset list.
     if (m_promptMode == PromptMode::FontDialog)
     {
-        const int faceCount = FontFaceMonospaceCount();
-        const int sizeCount = FontSizeCount();
+        const int presetCount = FontFaceMonospaceCount() * FontSizeCount();
+        constexpr int visibleRows = 12;
+        auto clampScroll = [&]() {
+            int maxScroll = std::max(0, presetCount - visibleRows);
+            if (m_fontDialogPresetIdx < m_fontDialogScrollTop)
+                m_fontDialogScrollTop = m_fontDialogPresetIdx;
+            else if (m_fontDialogPresetIdx >= m_fontDialogScrollTop + visibleRows)
+                m_fontDialogScrollTop = m_fontDialogPresetIdx - visibleRows + 1;
+            m_fontDialogScrollTop = std::clamp(m_fontDialogScrollTop, 0, maxScroll);
+        };
         switch (key.scancode)
         {
             case SDL_SCANCODE_UP:
-                if (m_fontDialogFocusColumn == 0)
-                {
-                    if (m_fontDialogFaceIdx > 0) --m_fontDialogFaceIdx;
-                }
-                else
-                {
-                    if (m_fontDialogSizeIdx > 0) --m_fontDialogSizeIdx;
-                }
+                if (m_fontDialogPresetIdx > 0) --m_fontDialogPresetIdx;
+                clampScroll();
                 break;
             case SDL_SCANCODE_DOWN:
-                if (m_fontDialogFocusColumn == 0)
-                {
-                    if (m_fontDialogFaceIdx < faceCount - 1) ++m_fontDialogFaceIdx;
-                }
-                else
-                {
-                    if (m_fontDialogSizeIdx < sizeCount - 1) ++m_fontDialogSizeIdx;
-                }
+                if (m_fontDialogPresetIdx < presetCount - 1) ++m_fontDialogPresetIdx;
+                clampScroll();
                 break;
-            case SDL_SCANCODE_TAB:
-            case SDL_SCANCODE_LEFT:
-            case SDL_SCANCODE_RIGHT:
-                m_fontDialogFocusColumn = 1 - m_fontDialogFocusColumn;
+            case SDL_SCANCODE_PAGEUP:
+                m_fontDialogPresetIdx = std::max(0, m_fontDialogPresetIdx - visibleRows);
+                clampScroll();
+                break;
+            case SDL_SCANCODE_PAGEDOWN:
+                m_fontDialogPresetIdx = std::min(presetCount - 1,
+                                                 m_fontDialogPresetIdx + visibleRows);
+                clampScroll();
+                break;
+            case SDL_SCANCODE_HOME:
+                m_fontDialogPresetIdx = 0;
+                clampScroll();
+                break;
+            case SDL_SCANCODE_END:
+                m_fontDialogPresetIdx = presetCount - 1;
+                clampScroll();
                 break;
             case SDL_SCANCODE_RETURN:
                 ApplyFontDialogSelection();
@@ -787,12 +811,12 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
         return true;
     }
 
-    // Font picker
+    // Font picker — flat preset list.
     if (m_promptMode == PromptMode::FontDialog)
     {
-        const int faceCount = FontFaceMonospaceCount();
-        const int sizeCount = FontSizeCount();
-        auto rect = m_ui->FontDialogRect(m_screenColumns, faceCount, sizeCount);
+        const int presetCount = FontFaceMonospaceCount() * FontSizeCount();
+        constexpr int visibleRows = 12;
+        auto rect = m_ui->FontDialogRect(m_screenColumns);
         if (!rect.Contains(cellCol, cellRow))
         {
             m_promptMode    = PromptMode::None;
@@ -801,19 +825,36 @@ bool Application::HandleDialogMouseDown(int cellCol, int cellRow)
             return true;
         }
         auto click = m_ui->HitTestFontDialog(cellCol, cellRow, m_screenColumns,
-                                             faceCount, sizeCount);
+                                             presetCount, m_fontDialogScrollTop);
+        int maxScroll = std::max(0, presetCount - visibleRows);
         switch (click.hit)
         {
-            case RetroUi::FontHit::FaceRow:
-                m_fontDialogFaceIdx     = click.index;
-                m_fontDialogFocusColumn = 0;
-                m_needsRedraw           = true;
+            case RetroUi::FontHit::PresetRow:
+                m_fontDialogPresetIdx = click.index;
+                m_needsRedraw         = true;
                 break;
-            case RetroUi::FontHit::SizeRow:
-                m_fontDialogSizeIdx     = click.index;
-                m_fontDialogFocusColumn = 1;
-                m_needsRedraw           = true;
+            case RetroUi::FontHit::ScrollUp:
+                m_fontDialogScrollTop = std::max(0, m_fontDialogScrollTop - 1);
+                m_needsRedraw         = true;
                 break;
+            case RetroUi::FontHit::ScrollDown:
+                m_fontDialogScrollTop = std::min(maxScroll,
+                                                 m_fontDialogScrollTop + 1);
+                m_needsRedraw         = true;
+                break;
+            case RetroUi::FontHit::ScrollThumb:
+                m_scrollbarDragActive       = true;
+                m_scrollbarDragOwner        = PromptMode::FontDialog;
+                m_scrollbarDragX            = rect.x + rect.w - 2;
+                m_scrollbarDragY            = rect.y + 1;
+                m_scrollbarDragHeight       = visibleRows;
+                m_scrollbarDragTotalItems   = presetCount;
+                m_scrollbarDragVisibleItems = visibleRows;
+                m_scrollbarDragGrabOffset   = click.grabOffsetInThumb;
+                break;
+            case RetroUi::FontHit::ScrollTrackAbove:
+            case RetroUi::FontHit::ScrollTrackBelow:
+                break; // page-jump on track click is a deferred enhancement
             case RetroUi::FontHit::ApplyHint:
                 ApplyFontDialogSelection();
                 m_needsRedraw = true;
@@ -1156,9 +1197,51 @@ void Application::HandleMouseDown(int cellCol, int cellRow, Uint8 button)
     }
 }
 
+void Application::HandleMouseUp(int /*cellCol*/, int /*cellRow*/, Uint8 button)
+{
+    if (button != SDL_BUTTON_LEFT) return;
+    if (m_scrollbarDragActive)
+    {
+        m_scrollbarDragActive = false;
+        m_scrollbarDragOwner  = PromptMode::None;
+    }
+}
+
 void Application::HandleMouseMotion(int cellCol, int cellRow)
 {
-    // Only called when a menu is active (see DispatchEvent gate).
+    // Scrollbar thumb drag — recompute scrollTop from the current mouse row,
+    // dispatched by which dialog initiated the drag.
+    if (m_scrollbarDragActive)
+    {
+        // Owning dialog closed mid-drag (e.g., Esc) — drop the drag silently.
+        if (m_promptMode != m_scrollbarDragOwner)
+        {
+            m_scrollbarDragActive = false;
+            m_scrollbarDragOwner  = PromptMode::None;
+            return;
+        }
+        int newScrollTop = m_ui->ComputeScrollTopFromThumbDrag(
+            cellRow,
+            m_scrollbarDragY, m_scrollbarDragHeight,
+            m_scrollbarDragTotalItems, m_scrollbarDragVisibleItems,
+            m_scrollbarDragGrabOffset);
+
+        switch (m_scrollbarDragOwner)
+        {
+            case PromptMode::FontDialog:
+                if (newScrollTop != m_fontDialogScrollTop)
+                {
+                    m_fontDialogScrollTop = newScrollTop;
+                    m_needsRedraw         = true;
+                }
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    // Menu hover (gated in DispatchEvent so we only get here with a menu open).
     if (cellRow == m_layout.ROW_MENUBAR)
     {
         int hit = m_ui->HitTestMenuBar(cellCol);
@@ -1958,16 +2041,21 @@ void Application::ScrollViewport()
 void Application::OpenFontDialog()
 {
     m_promptMode            = PromptMode::FontDialog;
-    m_fontDialogFaceIdx     = static_cast<int>(m_fontSettings.face);
-    m_fontDialogSizeIdx     = IndexOfFontSize(m_fontSettings.size);
-    m_fontDialogFocusColumn = 0;
+    int presetIdx = static_cast<int>(m_fontSettings.face) * FontSizeCount()
+                  + IndexOfFontSize(m_fontSettings.size);
+    int presetCount = FontFaceMonospaceCount() * FontSizeCount();
+    m_fontDialogPresetIdx = std::clamp(presetIdx, 0, std::max(0, presetCount - 1));
+    constexpr int visibleRows = 12;
+    int maxScroll = std::max(0, presetCount - visibleRows);
+    m_fontDialogScrollTop = std::clamp(
+        m_fontDialogPresetIdx - visibleRows / 2, 0, maxScroll);
 }
 
 void Application::ApplyFontDialogSelection()
 {
     FontSettings choice{
-        static_cast<FontFace>(m_fontDialogFaceIdx),
-        FontSizeAt(m_fontDialogSizeIdx)
+        static_cast<FontFace>(m_fontDialogPresetIdx / FontSizeCount()),
+        FontSizeAt(m_fontDialogPresetIdx % FontSizeCount())
     };
     m_promptMode = PromptMode::None;
     if (!(choice == m_fontSettings))
@@ -2667,11 +2755,11 @@ void Application::Render()
 
     // Font picker dialog (two-column: face | size)
     uiState.showFontDialog        = (m_promptMode == PromptMode::FontDialog);
-    uiState.fontDialogFaceIdx     = m_fontDialogFaceIdx;
-    uiState.fontDialogSizeIdx     = m_fontDialogSizeIdx;
-    uiState.fontDialogFocusColumn = m_fontDialogFocusColumn;
-    uiState.fontDialogActiveFace  = static_cast<int>(m_fontSettings.face);
-    uiState.fontDialogActiveSize  = IndexOfFontSize(m_fontSettings.size);
+    uiState.fontDialogPresetIdx   = m_fontDialogPresetIdx;
+    uiState.fontDialogScrollTop   = m_fontDialogScrollTop;
+    uiState.fontDialogActivePreset =
+        static_cast<int>(m_fontSettings.face) * FontSizeCount()
+        + IndexOfFontSize(m_fontSettings.size);
 
     uiState.themeDialogActive    = (m_promptMode == PromptMode::ThemeDialog);
     uiState.themeDialogFocusIdx  = m_themeDialogFocusIdx;

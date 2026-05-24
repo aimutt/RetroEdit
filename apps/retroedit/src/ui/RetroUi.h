@@ -43,13 +43,13 @@ struct EditorUiState
     bool showHelp  = false;
     bool showAbout = false;
 
-    // Font picker dialog (two-column: face | size)
+    // Font picker dialog (flat preset list).
+    // A "preset" is a (face, size) combo encoded as:
+    //   preset = face_idx * FontSizeCount() + size_idx
     bool showFontDialog        = false;
-    int  fontDialogFaceIdx     = 0;
-    int  fontDialogSizeIdx     = 0;
-    int  fontDialogFocusColumn = 0;   // 0 = face, 1 = size
-    int  fontDialogActiveFace  = 0;   // currently-applied face index
-    int  fontDialogActiveSize  = 0;   // currently-applied size index
+    int  fontDialogPresetIdx   = 0;
+    int  fontDialogScrollTop   = 0;
+    int  fontDialogActivePreset = 0;
 
     // Theme picker (Options > Theme...)
     bool themeDialogActive   = false;
@@ -121,7 +121,7 @@ public:
     Rect FindDialogRect     (int screenColumns) const;
     Rect WordCountDialogRect(int screenColumns) const;
     Rect ConfirmDialogRect  (int screenColumns) const;
-    Rect FontDialogRect     (int screenColumns, int faceCount, int sizeCount) const;
+    Rect FontDialogRect     (int screenColumns) const;
     Rect HelpScreenRect     (int screenColumns) const;
     Rect AboutScreenRect    (int screenColumns) const;
 
@@ -134,10 +134,37 @@ public:
     enum class WordCountHit { None, Checkbox, CloseHint };
     WordCountHit HitTestWordCountDialog(int cellCol, int cellRow, int screenColumns) const;
 
-    enum class FontHit { None, FaceRow, SizeRow, ApplyHint, CancelHint };
-    struct FontDialogClick { FontHit hit = FontHit::None; int index = -1; };
+    // Generic vertical-scrollbar hit-test. Mirrors the geometry that
+    // DrawScrollbar paints, so any dialog with a scrollbar can call this
+    // and translate the result into its own action.
+    //
+    // grabOffsetInThumb is filled in when region == Thumb — store it at
+    // mousedown and pass it back into ComputeScrollTopFromThumbDrag on
+    // mouse motion to recompute scrollTop.
+    struct ScrollbarHit {
+        enum class Region { None, UpButton, DownButton, Thumb, TrackAbove, TrackBelow };
+        Region region            = Region::None;
+        int    grabOffsetInThumb = 0;
+    };
+    ScrollbarHit HitTestScrollbar(int cellCol, int cellRow,
+                                  int scrollbarX, int scrollbarY, int height,
+                                  int totalItems, int visibleItems, int scrollTop) const;
+    int ComputeScrollTopFromThumbDrag(int cellRow,
+                                      int scrollbarY, int height,
+                                      int totalItems, int visibleItems,
+                                      int grabOffsetInThumb) const;
+
+    enum class FontHit { None, PresetRow,
+                         ScrollUp, ScrollDown,
+                         ScrollThumb, ScrollTrackAbove, ScrollTrackBelow,
+                         ApplyHint, CancelHint };
+    struct FontDialogClick {
+        FontHit hit               = FontHit::None;
+        int     index             = -1;
+        int     grabOffsetInThumb = 0;  // valid when hit == ScrollThumb
+    };
     FontDialogClick HitTestFontDialog(int cellCol, int cellRow, int screenColumns,
-                                       int faceCount, int sizeCount) const;
+                                       int presetCount, int scrollTop) const;
 
     Rect ThemeDialogRect(int screenColumns, int themeCount) const;
     enum class ThemeHit { None, Row, OkHint, CancelHint };
@@ -190,4 +217,10 @@ private:
     void DrawWordCountDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawPrintDialog(ScreenBuffer& buffer, const EditorUiState& state);
     void DrawBox(ScreenBuffer& buffer, int x, int y, int w, int h, Color fg, Color bg);
+
+    // Reusable vertical scrollbar — see RetroDocWriter's RetroUi.h for the
+    // full contract. Mirrors the same body so the two products can diverge
+    // visually if needed.
+    void DrawScrollbar(ScreenBuffer& buffer, int x, int y, int height,
+                       int totalItems, int visibleItems, int scrollTop);
 };
