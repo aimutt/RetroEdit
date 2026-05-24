@@ -649,6 +649,14 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
     paper.g = static_cast<uint8_t>(std::min(255, paper.g + 32));
     paper.b = static_cast<uint8_t>(std::min(255, paper.b + 18));
 
+    // Muted margin-guide color: midpoint of dimText and paper, so the rect
+    // is visible but no longer competes for attention with the text.
+    Color mutedMargin;
+    mutedMargin.r = static_cast<uint8_t>((m_theme.dimText.r + paper.r) / 2);
+    mutedMargin.g = static_cast<uint8_t>((m_theme.dimText.g + paper.g) / 2);
+    mutedMargin.b = static_cast<uint8_t>((m_theme.dimText.b + paper.b) / 2);
+    mutedMargin.a = 255;
+
     for (int p = 0; p < totalPages; ++p)
     {
         int pageTopY = ctx.editorAreaPxY - viewport + p * pageStride;
@@ -657,8 +665,9 @@ void WysiwygRenderer::Draw(const DrawContext& ctx)
 
         FillRect  (m_sdl, pageX, pageTopY, pageW, pageH, paper);
         StrokeRect(m_sdl, pageX, pageTopY, pageW, pageH, m_theme.border);
-        StrokeRect(m_sdl, pageX + mLeft, pageTopY + mTop, usableW, usableH,
-                   m_theme.dimText);
+        if (ctx.showMargins)
+            StrokeRect(m_sdl, pageX + mLeft, pageTopY + mTop, usableW, usableH,
+                       mutedMargin);
     }
 
     // Selection range, normalized.

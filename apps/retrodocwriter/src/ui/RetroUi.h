@@ -88,6 +88,11 @@ struct EditorUiState
     // Spell check
     bool spellCheckEnabled   = false;
     bool highlightMisspelled = false;
+
+    // WYSIWYG-only: show/hide the dim margin-guide rectangle inside each
+    // page. Defaults to true so the menu's "On/Off" indicator matches the
+    // app's default-on behavior.
+    bool showMargins         = true;
     struct MisspelledSpan { int row; int col; int len; };
     std::vector<MisspelledSpan> misspelledSpans;
 
@@ -141,7 +146,8 @@ public:
     int HitTestDropdownItem(int menuIdx, int cellCol, int cellRow,
                             int screenColumns,
                             bool wordWrap, bool showWordCount,
-                            bool spellCheckEnabled, bool highlightMisspelled) const;
+                            bool spellCheckEnabled, bool highlightMisspelled,
+                            bool showMargins) const;
 
     // Dialog hit-testing.
     // Each dialog has its own geometry, so each gets a dedicated hit-tester
