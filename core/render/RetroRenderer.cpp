@@ -12,8 +12,18 @@ RetroRenderer::~RetroRenderer() = default;
 void RetroRenderer::SetFontSettings(const FontSettings& settings)
 {
     m_settings = settings;
-    m_glyphs   = std::make_unique<GlyphCache>(
-        m_renderer, settings.face, FontSizePoints(settings.size));
+
+    // Scale the nominal point size to the screen's effective pixel size,
+    // matching what RetroDocWriter's WysiwygRenderer does. SDL_ttf's
+    // TTF_OpenFont treats its ptsize argument as a target pixel height
+    // assuming 72 DPI, so on a 96-DPI Windows display "16 pt" passed
+    // raw is rendered at only ~16 px — about 75 % of the size a user
+    // expects. Multiplying by dpi/72 (with +36 = half-72 for round-to-
+    // nearest) brings the on-screen glyph height to true point size.
+    constexpr int kScreenDpi = 96;   // matches WysiwygRenderer's hardcoded dpi
+    const int pointSize = FontSizePoints(settings.size);
+    const int pxSize    = std::max(1, (pointSize * kScreenDpi + 36) / 72);
+    m_glyphs = std::make_unique<GlyphCache>(m_renderer, settings.face, pxSize);
 }
 
 int RetroRenderer::CellWidth() const
