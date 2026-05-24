@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "editor/Utf8.h"
 #include "editor/WordCount.h"
 #include "platform/AppData.h"
 #include "platform/AssetPath.h"
@@ -483,9 +484,16 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
             }
             else if (m_cursor.column > 0)
             {
+                // UTF-8: delete the entire preceding codepoint (1..4 bytes)
+                // in one keypress.
                 PushUndoBeforeEdit();
-                m_document->Buffer().Backspace(m_cursor.column, m_cursor.row);
-                --m_cursor.column;
+                const std::string& line = m_document->Buffer().Line(m_cursor.row);
+                size_t leadOffset = Utf8LeadByteOffset(
+                    line, static_cast<size_t>(m_cursor.column - 1));
+                m_document->Buffer().DeleteRange(
+                    m_cursor.row, static_cast<int>(leadOffset),
+                    m_cursor.row, m_cursor.column);
+                m_cursor.column = static_cast<int>(leadOffset);
                 m_document->MarkDirty();
                 UpdateWindowTitle();
             }
@@ -514,7 +522,21 @@ void Application::HandleKeyDown(const SDL_KeyboardEvent& key)
             {
                 int len   = m_document->Buffer().LineLength(m_cursor.row);
                 int lines = m_document->Buffer().LineCount();
-                if (m_cursor.column < len || m_cursor.row < lines - 1)
+                if (m_cursor.column < len)
+                {
+                    // UTF-8: delete the entire codepoint at the cursor.
+                    PushUndoBeforeEdit();
+                    const std::string& line = m_document->Buffer().Line(m_cursor.row);
+                    int seqLen = Utf8CodepointSize(
+                        static_cast<unsigned char>(line[m_cursor.column]));
+                    int end = std::min(len, m_cursor.column + seqLen);
+                    m_document->Buffer().DeleteRange(
+                        m_cursor.row, m_cursor.column,
+                        m_cursor.row, end);
+                    m_document->MarkDirty();
+                    UpdateWindowTitle();
+                }
+                else if (m_cursor.row < lines - 1)
                 {
                     PushUndoBeforeEdit();
                     m_document->Buffer().DeleteForward(m_cursor.column, m_cursor.row);
@@ -1501,7 +1523,16 @@ void Application::MoveCursorDown()
 void Application::MoveCursorLeft()
 {
     if (m_cursor.column > 0)
+    {
         --m_cursor.column;
+        // UTF-8: skip back over continuation bytes so one keypress moves
+        // over the whole codepoint and the cursor always lands on a lead byte.
+        const std::string& line = m_document->Buffer().Line(m_cursor.row);
+        while (m_cursor.column > 0
+               && Utf8IsContinuationByte(
+                   static_cast<unsigned char>(line[m_cursor.column])))
+            --m_cursor.column;
+    }
     else if (m_cursor.row > 0)
     {
         --m_cursor.row;
@@ -1514,7 +1545,17 @@ void Application::MoveCursorRight()
 {
     int len = m_document->Buffer().LineLength(m_cursor.row);
     if (m_cursor.column < len)
+    {
         ++m_cursor.column;
+        // UTF-8: skip over the remaining continuation bytes of the
+        // codepoint we just crossed so one keypress moves over the whole
+        // codepoint.
+        const std::string& line = m_document->Buffer().Line(m_cursor.row);
+        while (m_cursor.column < static_cast<int>(line.size())
+               && Utf8IsContinuationByte(
+                   static_cast<unsigned char>(line[m_cursor.column])))
+            ++m_cursor.column;
+    }
     else if (m_cursor.row < m_document->Buffer().LineCount() - 1)
     {
         ++m_cursor.row;
