@@ -26,6 +26,5 @@ find_package(SDL3_ttf CONFIG REQUIRED PATHS "${CMAKE_CURRENT_SOURCE_DIR}/SDL_ttf
 # Shared static library used by every product EXE.
 add_subdirectory(core)
 
-# Product EXEs. Each links RetroCore and lives under apps/<product>/.
+# Product EXE. Links RetroCore and lives under apps/retroedit/.
 add_subdirectory(apps/retroedit)
-add_subdirectory(apps/retrodocwriter)
